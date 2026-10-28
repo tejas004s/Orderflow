@@ -1,0 +1,118 @@
+# OrderFlow local stack. Usage (from repo root):
+#   docker compose -f deploy/docker-compose.yml up -d --build --wait
+name: orderflow
+
+x-service: &service
+  image: orderflow:dev
+  restart: unless-stopped
+  environment: &env
+    DATABASE_URL: postgres://orderflow:orderflow@postgres:5432/orderflow?sslmode=disable
+    KAFKA_BROKERS: kafka:9092
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    APP_ENV: ${APP_ENV:-dev}
+    JWT_SECRET: ${JWT_SECRET:-dev-only-change-me-dev-only-change-me}
+  depends_on:
+    init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orderflow
+      POSTGRES_PASSWORD: orderflow
+      POSTGRES_DB: orderflow
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderflow -d orderflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:3.8.0
+    ports: ["29092:29092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 1
+    volumes: [kafkadata:/var/lib/kafka/data]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # One-shot: apply migrations and create topics, then exit 0.
+  init:
+    image: orderflow:dev
+    build: { context: .., dockerfile: Dockerfile }
+    command: ["ofctl", "init"]
+    environment: *env
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+
+  gateway:
+    <<: *service
+    command: ["gateway"]
+    environment: { <<: *env, HTTP_ADDR: ":8080", ORDER_SERVICE_URL: "http://order:8081" }
+    ports: ["8080:8080"]
+    healthcheck: &hc
+      test: ["CMD", "ofctl", "health", "http://localhost:8080/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  order:
+    <<: *service
+    command: ["order"]
+    environment: { <<: *env, HTTP_ADDR: ":8081" }
+    ports: ["8081:8081"]
+    healthcheck: { <<: *hc, test: ["CMD", "ofctl", "health", "http://localhost:8081/readyz"] }
+
+  matching:
+    <<: *service
+    command: ["matching"]
+    environment: { <<: *env, HTTP_ADDR: ":8082" }
+    ports: ["8082:8082"]
+    healthcheck: { <<: *hc, test: ["CMD", "ofctl", "health", "http://localhost:8082/readyz"] }
+
+  ledger:
+    <<: *service
+    command: ["ledger"]
+    environment: { <<: *env, HTTP_ADDR: ":8083" }
+    ports: ["8083:8083"]
+    healthcheck: { <<: *hc, test: ["CMD", "ofctl", "health", "http://localhost:8083/readyz"] }
+
+  marketdata:
+    <<: *service
+    command: ["marketdata"]
+    environment: { <<: *env, HTTP_ADDR: ":8084" }
+    ports: ["8084:8084"]
+    healthcheck: { <<: *hc, test: ["CMD", "ofctl", "health", "http://localhost:8084/readyz"] }
+
+  botrunner:
+    <<: *service
+    command: ["botrunner"]
+    environment: { <<: *env, HTTP_ADDR: ":8085", GATEWAY_URL: "http://gateway:8080" }
+    ports: ["8085:8085"]
+    healthcheck: { <<: *hc, test: ["CMD", "ofctl", "health", "http://localhost:8085/readyz"] }
+
+volumes:
+  pgdata:
+  kafkadata:
+
