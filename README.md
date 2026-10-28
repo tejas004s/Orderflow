@@ -77,8 +77,8 @@ web/         React app
 |---|---|
 | M0 Skeleton | ✅ |
 | M1 Matching engine core | ✅ (~276k cmds/sec/core, 1M-order invariant suite passing) |
-| M2 Orders → Kafka → engine | ⏳ |
-| M3 Ledger & settlement | ⏳ |
+| M2 Orders → Kafka → engine | ✅ (order-service, outbox relay, partition matching workers) |
+| M3 Ledger & settlement | ✅ (idempotent consumer, double-entry ledger, reconciliation audit) |
 | M4 Gateway & WebSocket | ⏳ |
 | M5 React UI | ⏳ |
 | M6 Market data & bots | ⏳ |

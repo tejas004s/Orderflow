@@ -3,21 +3,25 @@
 //	ofctl migrate          apply database migrations ($DATABASE_URL)
 //	ofctl topics           create Kafka topics ($KAFKA_BROKERS)
 //	ofctl init             migrate + topics (used by docker compose)
+//	ofctl reconcile        audit double-entry ledger and reservations ($DATABASE_URL)
 //	ofctl health <url>     exit 0 if GET url returns 2xx (container healthchecks)
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/tejas004s/orderflow/internal/config"
 	"github.com/tejas004s/orderflow/internal/kafka"
+	"github.com/tejas004s/orderflow/internal/ledger"
 	"github.com/tejas004s/orderflow/migrations"
 )
 
@@ -35,6 +39,8 @@ func main() {
 		if err = migrate(); err == nil {
 			err = topics()
 		}
+	case "reconcile":
+		err = reconcile()
 	case "health":
 		if len(os.Args) < 3 {
 			usage()
@@ -50,7 +56,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ofctl migrate|topics|init|health <url>")
+	fmt.Fprintln(os.Stderr, "usage: ofctl migrate|topics|init|reconcile|health <url>")
 	os.Exit(2)
 }
 
@@ -91,6 +97,21 @@ func topics() error {
 	}
 	fmt.Println("topics ensured")
 	return nil
+}
+
+func reconcile() error {
+	cfg := config.Load("ofctl", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	rep, err := ledger.Reconcile(ctx, pool)
+	raw, _ := json.Marshal(rep)
+	fmt.Println(string(raw))
+	return err
 }
 
 func health(url string) error {

@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package orderflow.v1;
+
+option go_package = "github.com/tejas004s/orderflow/internal/events;events";
+
+// Envelope wraps every Kafka message in OrderFlow (SDD section 4.3).
+message Envelope {
+  string event_id       = 1; // UUID
+  string event_type     = 2; // e.g. "order.command.place", "order.event", "trade.executed"
+  uint32 schema_version = 3; // starts at 1
+  int64  occurred_at    = 4; // unix nanoseconds
+  string producer       = 5; // service name
+  string correlation_id = 6; // propagated from HTTP request
+  bytes  payload        = 7; // encoded inner message
+}
+
+message OrderCommand {
+  string command_id = 1; // UUID
+  string kind       = 2; // "PLACE" | "CANCEL"
+  string symbol     = 3;
+  string order_id   = 4; // UUID
+  string user_id    = 5; // UUID
+  string side       = 6; // "BUY" | "SELL"
+  string order_type = 7; // "LIMIT" | "MARKET"
+  int64  price      = 8; // minor units (limit price for LIMIT, protection price for MARKET)
+  int64  qty        = 9; // shares
+  int64  timestamp  = 10; // unix nanoseconds
+}
+
+message OrderEvent {
+  string event_id    = 1;
+  string command_id  = 2;
+  string kind        = 3; // "ORDER" | "CANCEL_REJECT" | "DUPLICATE"
+  string symbol      = 4;
+  uint64 seq         = 5;
+  int64  timestamp   = 6;
+  string order_id    = 7;
+  string user_id     = 8;
+  string side        = 9;
+  string order_type  = 10;
+  int64  price       = 11;
+  int64  qty         = 12;
+  int64  filled_qty  = 13;
+  int64  leaves_qty  = 14;
+  string status      = 15; // ACCEPTED | PARTIALLY_FILLED | FILLED | CANCELLED | REJECTED
+  string reason      = 16;
+  bool   resting     = 17;
+}
+
+message TradeExecuted {
+  string match_id       = 1;
+  string command_id     = 2;
+  string symbol         = 3;
+  uint64 seq            = 4;
+  int64  price          = 5;
+  int64  qty            = 6;
+  string buy_order_id   = 7;
+  string sell_order_id  = 8;
+  string buyer_id       = 9;
+  string seller_id      = 10;
+  string maker_order_id = 11;
+  string aggressor_side = 12; // "BUY" | "SELL"
+  int64  executed_at    = 13; // unix nanoseconds
+}
+
+message MarketTick {
+  string symbol    = 1;
+  int64  price     = 2;
+  int64  volume    = 3;
+  int64  timestamp = 4;
+}
+
+message Candle {
+  string symbol       = 1;
+  string interval     = 2; // "1m"
+  int64  bucket_start = 3; // unix seconds
+  int64  open         = 4;
+  int64  high         = 5;
+  int64  low          = 6;
+  int64  close        = 7;
+  int64  volume       = 8;
+}
+
