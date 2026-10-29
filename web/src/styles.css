@@ -1,0 +1,580 @@
+:root {
+  --bg: #070b12;
+  --panel: #0d131f;
+  --panel-alt: #131c2e;
+  --border: #1e293b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --buy: #10b981;
+  --buy-bg: rgba(16, 185, 129, 0.16);
+  --sell: #ef4444;
+  --sell-bg: rgba(239, 68, 68, 0.16);
+  --accent: #3b82f6;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.bold {
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* Auth Screen */
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-header h1 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--buy);
+  box-shadow: 0 0 10px var(--buy);
+}
+
+.auth-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Topbar */
+.terminal-layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.topbar-left,
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 8px;
+}
+
+.brand-title {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 14px;
+}
+
+.symbol-strip {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sym-chip {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.sym-chip.active {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.sym-name {
+  font-weight: 600;
+}
+
+.kpi-group {
+  display: flex;
+  gap: 16px;
+  padding: 0 8px;
+}
+
+.kpi {
+  display: flex;
+  flex-direction: column;
+}
+
+.kpi-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.kpi-val {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pnl-pos {
+  color: var(--buy);
+}
+
+.pnl-neg {
+  color: var(--sell);
+}
+
+.ws-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.ws-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.ws-live .ws-dot {
+  background: var(--buy);
+}
+
+.ws-down .ws-dot {
+  background: var(--sell);
+}
+
+.user-pill {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Main Workspace Grid */
+.workspace-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.55fr 0.9fr 0.8fr 0.95fr;
+  grid-template-rows: 420px 1fr;
+  gap: 8px;
+  padding: 8px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.chart-canvas {
+  flex: 1;
+  width: 100%;
+}
+
+.bottom-panel {
+  grid-column: 1 / -1;
+}
+
+/* OrderBook & TradeTape */
+.ob-cols-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.7fr;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.ob-side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.ob-asks {
+  justify-content: flex-end;
+}
+
+.ob-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.7fr;
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.ob-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.depth-bar {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: -1;
+}
+
+.ask-bar {
+  background: var(--sell-bg);
+}
+
+.bid-bar {
+  background: var(--buy-bg);
+}
+
+.ask-px {
+  color: var(--sell);
+}
+
+.bid-px {
+  color: var(--buy);
+}
+
+.ob-spread {
+  padding: 6px 12px;
+  background: var(--panel-alt);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.last-px {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.spread-badge {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.tape-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.empty-row {
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* Order Ticket */
+.side-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 10px 12px 4px;
+}
+
+.side-btn {
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.buy-btn.active {
+  background: var(--buy);
+  color: #031911;
+  border-color: var(--buy);
+}
+
+.sell-btn.active {
+  background: var(--sell);
+  color: #fff;
+  border-color: var(--sell);
+}
+
+.type-toggle {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+}
+
+.tab-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tab-btn.active {
+  background: var(--panel-alt);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ticket-form {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.field input {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.market-band-note {
+  background: var(--panel-alt);
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ticket-summary {
+  background: var(--panel-alt);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.submit-order-btn {
+  padding: 10px;
+  border-radius: 6px;
+  border: none;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.buy-submit {
+  background: var(--buy);
+  color: #041f14;
+}
+
+.sell-submit {
+  background: var(--sell);
+  color: #fff;
+}
+
+.ticket-feedback {
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.ticket-feedback.ok {
+  background: var(--buy-bg);
+  color: var(--buy);
+}
+
+.ticket-feedback.err {
+  background: var(--sell-bg);
+  color: var(--sell);
+}
+
+.seed-toolbar {
+  margin-top: auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.ghost-btn {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+/* Bottom Tables */
+.bottom-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  max-height: 260px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table th {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.empty-cell {
+  text-align: center !important;
+  color: var(--muted);
+  padding: 20px !important;
+}
+
+.badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.badge-buy {
+  background: var(--buy-bg);
+  color: var(--buy);
+}
+
+.badge-sell {
+  background: var(--sell-bg);
+  color: var(--sell);
+}
+
+.status-pill {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-filled {
+  color: var(--buy);
+}
+
+.status-cancelled,
+.status-rejected {
+  color: var(--muted);
+}
+
+.cancel-btn {
+  background: var(--sell-bg);
+  border: 1px solid var(--sell);
+  color: var(--sell);
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}

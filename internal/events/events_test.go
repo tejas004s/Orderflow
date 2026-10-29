@@ -78,4 +78,3 @@ func TestFromEngineEventConversion(t *testing.T) {
 		t.Fatal("expected TradeExecuted")
 	}
 }
-

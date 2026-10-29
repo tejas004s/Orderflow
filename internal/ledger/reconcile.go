@@ -139,4 +139,3 @@ func Reconcile(ctx context.Context, pool *pgxpool.Pool) (AuditReport, error) {
 
 	return rep, errors.Join(errs...)
 }
-

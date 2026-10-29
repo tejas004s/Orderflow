@@ -251,4 +251,3 @@ type Candle struct {
 	Close       int64  `json:"close"`
 	Volume      int64  `json:"volume"`
 }
-

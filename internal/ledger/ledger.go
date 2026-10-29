@@ -466,4 +466,3 @@ func (s *Service) RunKafkaLoop(ctx context.Context, cl *kgo.Client) error {
 		})
 	}
 }
-

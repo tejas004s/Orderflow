@@ -185,7 +185,7 @@ type Trade struct {
 
 // Level is an aggregated price level used for depth snapshots.
 type Level struct {
-	Price  int64
-	Qty    int64
-	Orders int
+	Price  int64 `json:"price"`
+	Qty    int64 `json:"qty"`
+	Orders int   `json:"orders"`
 }

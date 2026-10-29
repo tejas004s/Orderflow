@@ -22,6 +22,7 @@ import (
 	"github.com/tejas004s/orderflow/internal/events"
 	"github.com/tejas004s/orderflow/internal/httpx"
 	"github.com/tejas004s/orderflow/internal/kafka"
+	"github.com/tejas004s/orderflow/internal/obs"
 	"github.com/tejas004s/orderflow/internal/outbox"
 )
 
@@ -157,7 +158,9 @@ func (p *Processor) HandleRaw(ctx context.Context, part int32, offset int64, key
 		return p.sendDLQ(ctx, key, value, err)
 	}
 
+	t0 := time.Now()
 	outEvents := st.eng.Process(cmd)
+	obs.MatchLatencySeconds.Observe(time.Since(t0).Seconds())
 	msgs := make([]outbox.Message, 0, len(outEvents))
 	for _, ev := range outEvents {
 		if ev.Kind == engine.EvDuplicate {
@@ -165,6 +168,7 @@ func (p *Processor) HandleRaw(ctx context.Context, part int32, offset int64, key
 		}
 		oev, tev := events.FromEngineEvent(ev)
 		if tev != nil {
+			obs.TradesTotal.WithLabelValues(tev.Symbol).Inc()
 			raw, err := events.Wrap(tev.MatchID, events.TypeTradeExecuted, "matching-engine", env.CorrelationID, tev.ExecutedAt, tev)
 			if err != nil {
 				return err
@@ -180,6 +184,7 @@ func (p *Processor) HandleRaw(ctx context.Context, part int32, offset int64, key
 			})
 		}
 		if oev != nil {
+			obs.OrdersTotal.WithLabelValues(oev.Side, oev.OrderType, oev.Status).Inc()
 			raw, err := events.Wrap(oev.EventID, events.TypeOrderEvent, "matching-engine", env.CorrelationID, oev.Timestamp, oev)
 			if err != nil {
 				return err
@@ -326,4 +331,3 @@ func NewRouter(p *Processor, baseMux *http.ServeMux) http.Handler {
 	}
 	return r
 }
-

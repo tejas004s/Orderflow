@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: orderflow
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - gateway:8080
+          - order:8081
+          - matching:8082
+          - ledger:8083
+          - marketdata:8084
+          - botrunner:8085

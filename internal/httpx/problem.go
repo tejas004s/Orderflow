@@ -58,4 +58,3 @@ func CorrelationMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(obs.WithCorrelationID(r.Context(), cid)))
 	})
 }
-

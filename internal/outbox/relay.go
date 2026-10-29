@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/tejas004s/orderflow/internal/obs"
 )
 
 // Message is a single outbox row to be published.
@@ -192,6 +194,6 @@ func (r *Relay) DrainBatch(ctx context.Context) (int, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
+	obs.OutboxBacklog.Set(float64(len(msgs)))
 	return len(msgs), nil
 }
-

@@ -150,4 +150,3 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteProblem(w, r, http.StatusInternalServerError, "Internal Error", err.Error())
 	}
 }
-
