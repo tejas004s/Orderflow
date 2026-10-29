@@ -74,9 +74,13 @@ func Unwrap(data []byte, dst any) (Envelope, error) {
 }
 
 // OrderCommand is the payload on topic orders.commands.
+//
+// For Kind "REPLACE", Price and Qty are the order's new limit price and new
+// total quantity (filled + open); Side and OrderType are not used because the
+// engine looks the resting order up by OrderID.
 type OrderCommand struct {
 	CommandID uuid.UUID `json:"command_id"`
-	Kind      string    `json:"kind"` // "PLACE" | "CANCEL"
+	Kind      string    `json:"kind"` // "PLACE" | "CANCEL" | "REPLACE"
 	Symbol    string    `json:"symbol"`
 	OrderID   uuid.UUID `json:"order_id"`
 	UserID    uuid.UUID `json:"user_id"`
@@ -104,6 +108,9 @@ func (c OrderCommand) ToEngine() (engine.Command, error) {
 	case "CANCEL":
 		out.Kind = engine.CmdCancel
 		return out, nil
+	case "REPLACE":
+		out.Kind = engine.CmdReplace
+		return out, nil
 	default:
 		return out, fmt.Errorf("unknown command kind %q", c.Kind)
 	}
@@ -129,8 +136,11 @@ func (c OrderCommand) ToEngine() (engine.Command, error) {
 // FromEngineCommand converts engine.Command to wire OrderCommand.
 func FromEngineCommand(c engine.Command) OrderCommand {
 	kind := "PLACE"
-	if c.Kind == engine.CmdCancel {
+	switch c.Kind {
+	case engine.CmdCancel:
 		kind = "CANCEL"
+	case engine.CmdReplace:
+		kind = "REPLACE"
 	}
 	return OrderCommand{
 		CommandID: c.ID,
@@ -147,24 +157,33 @@ func FromEngineCommand(c engine.Command) OrderCommand {
 }
 
 // OrderEvent is the payload on topic orders.events.
+//
+// Kind "REPLACED" is the final report of an accepted cancel-replace: Price and
+// Qty are the order's new limit price and total quantity, FilledQty/LeavesQty/
+// Status/Resting its state after any trades the replace triggered, and
+// PrevPrice/PrevQty/PrevFilled its state just before the replace. "REPLACE_REJECT"
+// means the replace was refused and the order is unchanged.
 type OrderEvent struct {
-	EventID   uuid.UUID `json:"event_id"`
-	CommandID uuid.UUID `json:"command_id"`
-	Kind      string    `json:"kind"` // "ORDER" | "CANCEL_REJECT" | "DUPLICATE"
-	Symbol    string    `json:"symbol"`
-	Seq       uint64    `json:"seq"`
-	Timestamp int64     `json:"timestamp"`
-	OrderID   uuid.UUID `json:"order_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	Side      string    `json:"side,omitempty"`
-	OrderType string    `json:"order_type,omitempty"`
-	Price     int64     `json:"price,omitempty"`
-	Qty       int64     `json:"qty,omitempty"`
-	FilledQty int64     `json:"filled_qty"`
-	LeavesQty int64     `json:"leaves_qty"`
-	Status    string    `json:"status,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
-	Resting   bool      `json:"resting"`
+	EventID    uuid.UUID `json:"event_id"`
+	CommandID  uuid.UUID `json:"command_id"`
+	Kind       string    `json:"kind"` // "ORDER" | "CANCEL_REJECT" | "DUPLICATE" | "REPLACED" | "REPLACE_REJECT"
+	Symbol     string    `json:"symbol"`
+	Seq        uint64    `json:"seq"`
+	Timestamp  int64     `json:"timestamp"`
+	OrderID    uuid.UUID `json:"order_id"`
+	UserID     uuid.UUID `json:"user_id"`
+	Side       string    `json:"side,omitempty"`
+	OrderType  string    `json:"order_type,omitempty"`
+	Price      int64     `json:"price,omitempty"`
+	Qty        int64     `json:"qty,omitempty"`
+	FilledQty  int64     `json:"filled_qty"`
+	LeavesQty  int64     `json:"leaves_qty"`
+	Status     string    `json:"status,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Resting    bool      `json:"resting"`
+	PrevPrice  int64     `json:"prev_price,omitempty"`
+	PrevQty    int64     `json:"prev_qty,omitempty"`
+	PrevFilled int64     `json:"prev_filled,omitempty"`
 }
 
 // TradeExecuted is the payload on topic trades.executed.
@@ -182,6 +201,11 @@ type TradeExecuted struct {
 	MakerOrderID  uuid.UUID `json:"maker_order_id"`
 	AggressorSide string    `json:"aggressor_side"`
 	ExecutedAt    int64     `json:"executed_at"`
+
+	// BuyLimitPrice is the per-share price the buy order was reserved at when
+	// the engine matched it (its limit, or market protection price). 0 means
+	// unknown/unbounded and settlement falls back to the order's stored price.
+	BuyLimitPrice int64 `json:"buy_limit_price,omitempty"`
 }
 
 // FromEngineEvent converts an engine.Event to either an OrderEvent or a TradeExecuted.
@@ -202,6 +226,7 @@ func FromEngineEvent(ev engine.Event) (*OrderEvent, *TradeExecuted) {
 			MakerOrderID:  tr.MakerOrder,
 			AggressorSide: tr.Aggressor.String(),
 			ExecutedAt:    ev.Timestamp,
+			BuyLimitPrice: tr.BuyLimit,
 		}
 	}
 	kind := "ORDER"
@@ -210,25 +235,32 @@ func FromEngineEvent(ev engine.Event) (*OrderEvent, *TradeExecuted) {
 		kind = "CANCEL_REJECT"
 	case engine.EvDuplicate:
 		kind = "DUPLICATE"
+	case engine.EvReplaced:
+		kind = "REPLACED"
+	case engine.EvReplaceReject:
+		kind = "REPLACE_REJECT"
 	}
 	return &OrderEvent{
-		EventID:   ev.ID,
-		CommandID: ev.CommandID,
-		Kind:      kind,
-		Symbol:    ev.Symbol,
-		Seq:       ev.Seq,
-		Timestamp: ev.Timestamp,
-		OrderID:   ev.OrderID,
-		UserID:    ev.UserID,
-		Side:      ev.Side.String(),
-		OrderType: ev.Type.String(),
-		Price:     ev.Price,
-		Qty:       ev.Qty,
-		FilledQty: ev.FilledQty,
-		LeavesQty: ev.LeavesQty,
-		Status:    ev.Status.String(),
-		Reason:    ev.Reason.String(),
-		Resting:   ev.Resting,
+		EventID:    ev.ID,
+		CommandID:  ev.CommandID,
+		Kind:       kind,
+		Symbol:     ev.Symbol,
+		Seq:        ev.Seq,
+		Timestamp:  ev.Timestamp,
+		OrderID:    ev.OrderID,
+		UserID:     ev.UserID,
+		Side:       ev.Side.String(),
+		OrderType:  ev.Type.String(),
+		Price:      ev.Price,
+		Qty:        ev.Qty,
+		FilledQty:  ev.FilledQty,
+		LeavesQty:  ev.LeavesQty,
+		Status:     ev.Status.String(),
+		Reason:     ev.Reason.String(),
+		Resting:    ev.Resting,
+		PrevPrice:  ev.PrevPrice,
+		PrevQty:    ev.PrevQty,
+		PrevFilled: ev.PrevFilled,
 	}, nil
 }
 

@@ -530,3 +530,171 @@ func TestLedgerConservationAndReconcileRandomized(t *testing.T) {
 		t.Fatalf("share conservation violated: got %d want %d", totalShares, wantShares)
 	}
 }
+
+func TestOrderReplaceEndToEnd(t *testing.T) {
+	pool, _ := testpg.New(t)
+	ctx := context.Background()
+	silentLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Alice has $10,000.00 (1,000,000 cents), Bob has 50 AAPL shares.
+	alice := seedUser(t, ctx, pool, "alice_replace@example.com", 1_000_000, "", 0, 0)
+	bob := seedUser(t, ctx, pool, "bob_replace@example.com", 0, "AAPL", 50, 18000)
+
+	cmdBus := &memBus{}
+	relay := outbox.NewRelay(pool, cmdBus, silentLog)
+	ordSvc := order.NewService(pool, relay)
+	srv := httptest.NewServer(order.NewRouter(ordSvc, nil))
+	defer srv.Close()
+
+	engineBus := &memBus{}
+	proc := matching.NewProcessor(engineBus, matching.PGSnapshotStore{Pool: pool}, silentLog)
+	ledgerSvc := ledger.NewService(pool, nil, silentLog)
+
+	placeHTTP := func(uid uuid.UUID, idemKey string, body map[string]any) (*http.Response, []byte) {
+		raw, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/orders", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(order.HeaderUserID, uid.String())
+		req.Header.Set("Idempotency-Key", idemKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("http post: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, b
+	}
+
+	patchHTTP := func(uid uuid.UUID, orderID uuid.UUID, body map[string]any) (*http.Response, []byte) {
+		raw, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/api/v1/orders/%s", srv.URL, orderID), bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(order.HeaderUserID, uid.String())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("http patch: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, b
+	}
+
+	drainAndSettle := func() {
+		if _, err := relay.DrainBatch(ctx); err != nil {
+			t.Fatalf("relay drain: %v", err)
+		}
+		for i, m := range cmdBus.takeAll() {
+			if err := proc.HandleRaw(ctx, 0, int64(i), m.Key, m.Payload); err != nil {
+				t.Fatalf("proc handle: %v", err)
+			}
+		}
+		for _, m := range engineBus.takeAll() {
+			if err := ledgerSvc.HandleRaw(ctx, m.Topic, m.Key, m.Payload); err != nil {
+				t.Fatalf("ledger handle(%s): %v", m.Topic, err)
+			}
+		}
+	}
+
+	// 1. Alice places BUY LIMIT for 10 @ $185.00 (18500 cents) -> reserves $1,850.00 (185,000 cents).
+	resp, body := placeHTTP(alice, "a-buy-1", map[string]any{
+		"symbol": "AAPL", "side": "BUY", "type": "LIMIT", "price": 18500, "qty": 10,
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("alice place order status=%d body=%s", resp.StatusCode, body)
+	}
+	var aliceOrd order.Order
+	_ = json.Unmarshal(body, &aliceOrd)
+
+	drainAndSettle()
+
+	if _, err := ledger.Reconcile(ctx, pool); err != nil {
+		t.Fatalf("reconcile after place: %v", err)
+	}
+
+	// 2. Alice amends her order to 12 @ $186.00 (18600 cents) -> needs 12*18600 = 223,200 cents reserved.
+	// Extra reservation needed = 223,200 - 185,000 = 38,200 cents.
+	resp, body = patchHTTP(alice, aliceOrd.ID, map[string]any{
+		"price": 18600,
+		"qty":   12,
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("alice patch status=%d body=%s", resp.StatusCode, body)
+	}
+	var repRes order.ReplaceResult
+	_ = json.Unmarshal(body, &repRes)
+	if repRes.ReservedDelta != 38_200 {
+		t.Fatalf("expected reserved delta 38200, got %d", repRes.ReservedDelta)
+	}
+
+	drainAndSettle()
+
+	// Verify order was updated in DB and balances are reconciled.
+	aliceOrd, err := ordSvc.GetOrder(ctx, alice, aliceOrd.ID)
+	if err != nil {
+		t.Fatalf("get order: %v", err)
+	}
+	if *aliceOrd.Price != 18600 || aliceOrd.Qty != 12 || aliceOrd.ReservedAmount != 223_200 {
+		t.Fatalf("order not updated properly: %+v", aliceOrd)
+	}
+
+	var aliceAvail, aliceRes int64
+	_ = pool.QueryRow(ctx, `SELECT available, reserved FROM accounts WHERE user_id = $1`, alice).Scan(&aliceAvail, &aliceRes)
+	if aliceRes != 223_200 || aliceAvail != (1_000_000-223_200) {
+		t.Fatalf("alice balances: avail=%d res=%d", aliceAvail, aliceRes)
+	}
+
+	if _, err := ledger.Reconcile(ctx, pool); err != nil {
+		t.Fatalf("reconcile after replace up: %v", err)
+	}
+
+	// 3. Alice amends down: reduce qty to 8 @ $184.00 (18400 cents) -> needs 8*18400 = 147,200 cents reserved.
+	// Surplus should be released by ledger when REPLACED is processed!
+	resp, body = patchHTTP(alice, aliceOrd.ID, map[string]any{
+		"price": 18400,
+		"qty":   8,
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("alice patch down status=%d body=%s", resp.StatusCode, body)
+	}
+	_ = json.Unmarshal(body, &repRes)
+	if repRes.ReservedDelta != 0 {
+		t.Fatalf("expected 0 delta on down-replace, got %d", repRes.ReservedDelta)
+	}
+
+	drainAndSettle()
+
+	aliceOrd, err = ordSvc.GetOrder(ctx, alice, aliceOrd.ID)
+	if err != nil {
+		t.Fatalf("get order: %v", err)
+	}
+	if *aliceOrd.Price != 18400 || aliceOrd.Qty != 8 || aliceOrd.ReservedAmount != 147_200 {
+		t.Fatalf("order not updated properly after reduce: %+v", aliceOrd)
+	}
+	_ = pool.QueryRow(ctx, `SELECT available, reserved FROM accounts WHERE user_id = $1`, alice).Scan(&aliceAvail, &aliceRes)
+	if aliceRes != 147_200 || aliceAvail != (1_000_000-147_200) {
+		t.Fatalf("alice balances after reduce: avail=%d res=%d", aliceAvail, aliceRes)
+	}
+
+	if _, err := ledger.Reconcile(ctx, pool); err != nil {
+		t.Fatalf("reconcile after replace down: %v", err)
+	}
+
+	// 4. Bob sells 8 @ $184.00 -> fully fills Alice's replaced order!
+	resp, body = placeHTTP(bob, "b-sell-1", map[string]any{
+		"symbol": "AAPL", "side": "SELL", "type": "LIMIT", "price": 18400, "qty": 8,
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("bob sell status=%d body=%s", resp.StatusCode, body)
+	}
+
+	drainAndSettle()
+
+	aliceOrd, _ = ordSvc.GetOrder(ctx, alice, aliceOrd.ID)
+	if aliceOrd.Status != "FILLED" || aliceOrd.FilledQty != 8 {
+		t.Fatalf("alice order not filled: %+v", aliceOrd)
+	}
+
+	if _, err := ledger.Reconcile(ctx, pool); err != nil {
+		t.Fatalf("reconcile after trade: %v", err)
+	}
+}

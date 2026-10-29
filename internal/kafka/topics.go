@@ -66,7 +66,9 @@ func EnsureTopics(ctx context.Context, adm *kadm.Client, replication int16) erro
 	for _, t := range Topics() {
 		resp, err := adm.CreateTopic(ctx, t.Partitions, replication, t.Configs, t.Name)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
+			if !errors.Is(err, kerr.TopicAlreadyExists) {
+				errs = append(errs, fmt.Errorf("%s: %w", t.Name, err))
+			}
 			continue
 		}
 		if resp.Err != nil && !errors.Is(resp.Err, kerr.TopicAlreadyExists) {

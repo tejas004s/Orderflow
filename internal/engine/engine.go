@@ -70,6 +70,8 @@ func (e *Engine) Process(cmd Command) []Event {
 		e.place(&cmd)
 	case CmdCancel:
 		e.cancel(&cmd)
+	case CmdReplace:
+		e.replace(&cmd)
 	default:
 		e.emitOrder(nil, &cmd, StatusRejected, ReasonInvalid, 0, false)
 	}
@@ -181,8 +183,10 @@ func (e *Engine) trade(b *Book, taker, maker *order, px, qty int64) {
 	t := Trade{Price: px, Qty: qty, MakerOrder: maker.id, Aggressor: taker.side}
 	if taker.side == Buy {
 		t.BuyOrderID, t.BuyerID, t.SellOrderID, t.SellerID = taker.id, taker.user, maker.id, maker.user
+		t.BuyLimit = taker.price
 	} else {
 		t.BuyOrderID, t.BuyerID, t.SellOrderID, t.SellerID = maker.id, maker.user, taker.id, taker.user
+		t.BuyLimit = maker.price
 	}
 	e.emit(b, Event{Kind: EvTrade, Trade: t})
 
@@ -218,6 +222,118 @@ func (e *Engine) cancel(c *Command) {
 		Kind: EvOrder, OrderID: o.id, UserID: o.user, Side: o.side, Type: Limit, Price: o.price,
 		Qty: o.qty, FilledQty: o.filled, LeavesQty: 0, Status: StatusCancelled, Reason: ReasonUserCancel,
 	})
+}
+
+// replace implements cancel-replace (see CmdReplace). The command carries the
+// new limit price and the new TOTAL quantity of the order.
+//
+// Time priority is the order's position in its price level's FIFO queue:
+//
+//   - same price, qty reduced: the order is shrunk in place and keeps its slot;
+//   - same price, qty increased: the order is moved to the tail of the level;
+//   - price changed: the order is removed and re-inserted as if it were a new
+//     limit order at the new price. It may trade immediately if the new price
+//     crosses the book, in which case self-trade prevention applies exactly as
+//     for a placed order (the replaced order is the one cancelled).
+//
+// On success the final event is EvReplaced, preceded by the trades (and maker
+// reports) the replace triggered. On failure a single EvReplaceReject is
+// emitted and nothing changes.
+func (e *Engine) replace(c *Command) {
+	reject := func(b *Book, r Reason) {
+		e.emit(b, Event{Kind: EvReplaceReject, OrderID: c.OrderID, UserID: c.UserID,
+			Price: c.Price, Qty: c.Qty, Reason: r})
+	}
+	if c.Symbol == "" || c.OrderID == uuid.Nil || c.Price <= 0 || c.Qty <= 0 {
+		var b *Book
+		if c.Symbol != "" {
+			b = e.book(c.Symbol)
+		}
+		reject(b, ReasonInvalid)
+		return
+	}
+	b := e.book(c.Symbol)
+	// A re-delivered replace command must not be applied twice. Command IDs
+	// share the dedupe window with order IDs; UUIDs never collide.
+	if c.ID != uuid.Nil && !e.seen.add(c.ID, c.Timestamp) {
+		e.emit(b, Event{Kind: EvDuplicate, OrderID: c.OrderID, UserID: c.UserID,
+			Price: c.Price, Qty: c.Qty, Reason: ReasonDuplicateOrder})
+		return
+	}
+	o, ok := b.orders[c.OrderID]
+	if !ok || (c.UserID != uuid.Nil && o.user != c.UserID) {
+		reject(b, ReasonUnknownOrder)
+		return
+	}
+	if c.Qty <= o.filled {
+		reject(b, ReasonQtyTooLow)
+		return
+	}
+	if c.Price == o.price && c.Qty == o.qty {
+		reject(b, ReasonNoChange)
+		return
+	}
+
+	prevPrice, prevQty, prevFilled := o.price, o.qty, o.filled
+	stp := false
+
+	switch {
+	case c.Price == o.price && c.Qty < o.qty:
+		b.shrink(o, c.Qty) // keeps time priority
+	case c.Price == o.price:
+		// Qty increased at the same price: back of the queue. The level is
+		// already on the book and uncrossed, so no matching is possible.
+		b.unlink(o)
+		o.qty, o.ts = c.Qty, c.Timestamp
+		b.rest(o)
+	default:
+		b.unlink(o)
+		o.price, o.qty, o.ts = c.Price, c.Qty, c.Timestamp
+		opp := b.side(o.side.Opposite())
+		for o.leaves() > 0 {
+			lvl := opp.best()
+			if lvl == nil || !crossesLimit(o.side, o.price, lvl.price) {
+				break
+			}
+			maker := lvl.head
+			if maker.user == o.user {
+				stp = true // self-trade prevention: cancel the replaced order
+				break
+			}
+			e.trade(b, o, maker, lvl.price, min(o.leaves(), maker.leaves()))
+		}
+		if o.leaves() > 0 && !stp {
+			b.rest(o)
+		}
+	}
+
+	ev := Event{
+		Kind: EvReplaced, OrderID: o.id, UserID: o.user, Side: o.side, Type: Limit,
+		Price: o.price, Qty: o.qty, FilledQty: o.filled,
+		PrevPrice: prevPrice, PrevQty: prevQty, PrevFilled: prevFilled,
+	}
+	switch {
+	case stp:
+		ev.Status, ev.Reason = StatusCancelled, ReasonSelfTrade
+	case o.leaves() == 0:
+		ev.Status = StatusFilled
+	default:
+		ev.LeavesQty, ev.Resting = o.leaves(), true
+		ev.Status = StatusAccepted
+		if o.filled > 0 {
+			ev.Status = StatusPartiallyFilled
+		}
+	}
+	e.emit(b, ev)
+}
+
+// crossesLimit reports whether an order on side with the given limit price may
+// trade against a resting order at restingPx.
+func crossesLimit(side Side, limit, restingPx int64) bool {
+	if side == Buy {
+		return restingPx <= limit
+	}
+	return restingPx >= limit
 }
 
 // emitOrder emits an execution report for the incoming order of command c.

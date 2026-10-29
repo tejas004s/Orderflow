@@ -123,14 +123,16 @@ services:
       gateway: { condition: service_healthy }
 
   prometheus:
-    image: prom/prometheus:v2.55.0
+    build:
+      context: ./prometheus
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports: ["9090:9090"]
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
-    image: grafana/grafana:11.3.0
+    build:
+      context: ./grafana
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports: ["3000:3000"]
     environment:
@@ -138,9 +140,6 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
 

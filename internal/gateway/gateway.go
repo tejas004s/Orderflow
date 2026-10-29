@@ -75,6 +75,7 @@ func (s *Server) Router(baseMux *http.ServeMux) http.Handler {
 
 			priv.Post("/orders", s.handlePlaceOrder)
 			priv.Delete("/orders/{id}", s.handleCancelOrder)
+			priv.Patch("/orders/{id}", s.handleReplaceOrder)
 			priv.Get("/orders", s.handleListOrders)
 			priv.Get("/portfolio", s.handlePortfolio)
 			// Demo helper: allow users/bots to seed shares or top up virtual cash
@@ -91,7 +92,7 @@ func (s *Server) Router(baseMux *http.ServeMux) http.Handler {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Correlation-ID")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -486,6 +487,18 @@ func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.proxyToOrderService(w, r, http.MethodDelete, "/api/v1/orders/"+oid)
+}
+
+// handleReplaceOrder amends the price and/or quantity of a resting limit order
+// (PATCH /api/v1/orders/{id}).
+func (s *Server) handleReplaceOrder(w http.ResponseWriter, r *http.Request) {
+	oid := chi.URLParam(r, "id")
+	if s.LocalOrders != nil && s.OrderServiceURL == "" {
+		r.Header.Set(order.HeaderUserID, auth.UserIDFromContext(r.Context()).String())
+		(&order.Handler{Svc: s.LocalOrders}).ReplaceOrder(w, r)
+		return
+	}
+	s.proxyToOrderService(w, r, http.MethodPatch, "/api/v1/orders/"+oid)
 }
 
 func (s *Server) proxyToOrderService(w http.ResponseWriter, r *http.Request, method, path string) {

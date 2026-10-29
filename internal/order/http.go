@@ -31,6 +31,7 @@ func NewRouter(s *Service, baseMux *http.ServeMux) http.Handler {
 	r.Get("/api/v1/orders", h.ListOrders)
 	r.Get("/api/v1/orders/{id}", h.GetOrder)
 	r.Delete("/api/v1/orders/{id}", h.CancelOrder)
+	r.Patch("/api/v1/orders/{id}", h.ReplaceOrder)
 
 	if baseMux != nil {
 		r.Mount("/", baseMux)
@@ -97,6 +98,42 @@ func (h *Handler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusAccepted, ord)
 }
 
+// ReplaceOrder handles PATCH /api/v1/orders/{id}. The JSON body carries the new
+// limit price and/or the new total quantity (both optional, at least one
+// required):
+//
+//	{"price": 18450, "qty": 8}
+//
+// It answers 202 Accepted with a ReplaceResult: the amendment is applied
+// asynchronously once the matching engine confirms it.
+func (h *Handler) ReplaceOrder(w http.ResponseWriter, r *http.Request) {
+	uid, err := userIDFromRequest(r, uuid.Nil)
+	if err != nil {
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, "Unauthorized", err.Error())
+		return
+	}
+	oid, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteProblem(w, r, http.StatusBadRequest, "Invalid Order ID", err.Error())
+		return
+	}
+	var req ReplaceRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		httpx.WriteProblem(w, r, http.StatusBadRequest, "Invalid JSON", err.Error())
+		return
+	}
+	req.UserID, req.OrderID = uid, oid
+
+	res, err := h.Svc.ReplaceOrder(r.Context(), req)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusAccepted, res)
+}
+
 // GetOrder handles GET /api/v1/orders/{id}.
 func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	uid, err := userIDFromRequest(r, uuid.Nil)
@@ -146,6 +183,10 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteProblem(w, r, http.StatusNotFound, "Order Not Found", err.Error())
 	case errors.Is(err, ErrOrderNotCancelable):
 		httpx.WriteProblem(w, r, http.StatusConflict, "Order Not Cancelable", err.Error())
+	case errors.Is(err, ErrOrderNotReplaceable):
+		httpx.WriteProblem(w, r, http.StatusConflict, "Order Not Replaceable", err.Error())
+	case errors.Is(err, ErrReplacePending):
+		httpx.WriteProblem(w, r, http.StatusConflict, "Replace In Progress", err.Error())
 	default:
 		httpx.WriteProblem(w, r, http.StatusInternalServerError, "Internal Error", err.Error())
 	}

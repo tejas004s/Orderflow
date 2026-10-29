@@ -59,12 +59,22 @@ func (t OrderType) String() string {
 	return "UNKNOWN"
 }
 
-// CommandKind distinguishes place from cancel.
+// CommandKind distinguishes place, cancel and replace.
 type CommandKind uint8
 
 const (
 	CmdPlace  CommandKind = 1
 	CmdCancel CommandKind = 2
+	// CmdReplace amends the price and/or total quantity of a resting LIMIT
+	// order (cancel-replace). Command.Price is the new limit price and
+	// Command.Qty the new TOTAL order quantity (filled + open), so the new
+	// open quantity is Qty - filled.
+	//
+	//   - same price, lower qty: amended in place, time priority is kept;
+	//   - same price, higher qty: loses time priority (re-queued at the tail);
+	//   - different price: atomic cancel + re-insert; the order loses time
+	//     priority and, if the new price crosses the book, trades as a taker.
+	CmdReplace CommandKind = 3
 )
 
 // Command is an input to the engine.
@@ -120,11 +130,14 @@ const (
 	ReasonDuplicateOrder Reason = 6 // order id already seen
 	ReasonUnknownOrder   Reason = 7 // cancel: order not on the book
 	ReasonPriceBand      Reason = 8 // market order: remainder beyond protection price
+	ReasonQtyTooLow      Reason = 9 // replace: new total qty <= already filled qty
+	ReasonNoChange       Reason = 10
 )
 
 func (r Reason) String() string {
 	return [...]string{"", "USER_CANCEL", "IOC_REMAINDER", "NO_LIQUIDITY", "SELF_TRADE",
-		"INVALID", "DUPLICATE_ORDER", "UNKNOWN_ORDER", "PRICE_BAND"}[r]
+		"INVALID", "DUPLICATE_ORDER", "UNKNOWN_ORDER", "PRICE_BAND",
+		"QTY_TOO_LOW", "NO_CHANGE"}[r]
 }
 
 // EventKind distinguishes event payloads.
@@ -141,6 +154,13 @@ const (
 	// already processed (e.g. an outbox re-publish). It carries no state
 	// change and consumers can ignore it.
 	EvDuplicate EventKind = 4
+	// EvReplaced is the final execution report of an accepted replace. It
+	// carries the order's state after the replace (and after any trades the
+	// replace triggered) plus the PrevPrice/PrevQty/PrevFilled it replaced.
+	EvReplaced EventKind = 5
+	// EvReplaceReject means a replace command could not be applied; the
+	// order is untouched. Reason says why.
+	EvReplaceReject EventKind = 6
 )
 
 // Event is an output of the engine.
@@ -166,6 +186,15 @@ type Event struct {
 	// Resting is true when LeavesQty is on the book after this event.
 	Resting bool
 
+	// EvReplaced: the order's state before the replace. PrevFilled is the
+	// filled quantity at the moment of the replace, before any trade the
+	// replace itself triggered. Together with Price/Qty they let a consumer
+	// compute the change in reservation without knowing anything else about
+	// the engine's state.
+	PrevPrice  int64
+	PrevQty    int64
+	PrevFilled int64
+
 	// EvTrade
 	Trade Trade
 }
@@ -181,6 +210,12 @@ type Trade struct {
 	SellerID    uuid.UUID
 	MakerOrder  uuid.UUID
 	Aggressor   Side
+
+	// BuyLimit is the limit (or market protection) price the buy order held
+	// when this trade executed, 0 if unbounded. Settlement uses it as the
+	// per-share reservation so it does not depend on whether a concurrent
+	// replace of the buy order has already been applied downstream.
+	BuyLimit int64
 }
 
 // Level is an aggregated price level used for depth snapshots.

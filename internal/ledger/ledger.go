@@ -99,6 +99,13 @@ func (s *Service) ApplyTrade(ctx context.Context, eventID uuid.UUID, tr events.T
 	if err != nil {
 		return false, fmt.Errorf("load buy order %s: %w", tr.BuyOrderID, err)
 	}
+	// Prefer the price the engine matched the buy order at over the stored
+	// one: a replace of the order may or may not have been applied to the
+	// stored row yet, whereas the engine's value is exactly what was reserved
+	// for this slice of the order.
+	if tr.BuyLimitPrice > 0 {
+		buyUnitReserve = tr.BuyLimitPrice
+	}
 
 	// 3. Ensure buyer's position row exists before locking positions in user_id order.
 	_, err = tx.Exec(ctx, `
@@ -270,6 +277,7 @@ func (s *Service) ApplyTrade(ctx context.Context, eventID uuid.UUID, tr events.T
 // ApplyOrderEvent applies an OrderEvent idempotently. When an order transitions
 // to CANCELLED or REJECTED, any reservation for the unfilled quantity
 // (ev.Qty - ev.FilledQty) is released back to available cash or shares.
+// REPLACED and REPLACE_REJECT events settle a cancel-replace (see replace.go).
 func (s *Service) ApplyOrderEvent(ctx context.Context, eventID uuid.UUID, ev events.OrderEvent) (bool, error) {
 	if eventID == uuid.Nil {
 		eventID = ev.EventID
@@ -309,6 +317,27 @@ func (s *Service) ApplyOrderEvent(ctx context.Context, eventID uuid.UUID, ev eve
 	}
 	if err != nil {
 		return false, err
+	}
+
+	// A refused replace: give back what order-service reserved for it and
+	// restore the quantity it raised. The order itself is unchanged.
+	if ev.Kind == "REPLACE_REJECT" {
+		if err := settleReplaceReject(ctx, tx, ev, userID, symbol, side, reservedAmount); err != nil {
+			return false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// An accepted replace: adopt the new price/qty and true up the reservation.
+	if ev.Kind == "REPLACED" {
+		reservedAmount, err = settleReplaced(ctx, tx, ev, userID, symbol, side, reservedAmount)
+		if err != nil {
+			return false, err
+		}
+		unitReserve, orderQty = ev.Price, ev.Qty
 	}
 
 	// Release unfilled reservation on transition to CANCELLED or REJECTED.

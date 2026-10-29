@@ -301,3 +301,11 @@ func (b *Book) unlink(o *order) {
 		b.side(o.side).remove(l)
 	}
 }
+
+// shrink lowers the total quantity of a resting order in place. The order
+// keeps its slot in the level's FIFO queue, i.e. its time priority.
+// Callers guarantee o.filled < newQty < o.qty.
+func (b *Book) shrink(o *order, newQty int64) {
+	o.lvl.total -= o.qty - newQty
+	o.qty = newQty
+}

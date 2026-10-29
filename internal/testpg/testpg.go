@@ -126,8 +126,13 @@ func New(t testing.TB) (*pgxpool.Pool, string) {
 		if err != nil {
 			t.Fatalf("parse admin url: %v", err)
 		}
-		dbURL = fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
-			cfg.ConnConfig.User, cfg.ConnConfig.Host, cfg.ConnConfig.Port, dbName)
+		if cfg.ConnConfig.Password != "" {
+			dbURL = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+				cfg.ConnConfig.User, url.QueryEscape(cfg.ConnConfig.Password), cfg.ConnConfig.Host, cfg.ConnConfig.Port, dbName)
+		} else {
+			dbURL = fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
+				cfg.ConnConfig.User, cfg.ConnConfig.Host, cfg.ConnConfig.Port, dbName)
+		}
 	}
 
 	if err := migrations.Up(dbURL); err != nil {

@@ -200,6 +200,26 @@ func (h *Hub) OnOrderEvent(ev events.OrderEvent) {
 	if ev.Kind == "DUPLICATE" {
 		return
 	}
+	if ev.Kind == "REPLACE_REJECT" {
+		// The order is unchanged on the book, so the projection must not be
+		// touched (beyond advancing its sequence number, which the reject
+		// consumed); the owner is still told why the amendment failed.
+		h.mu.Lock()
+		if bk := h.books[ev.Symbol]; bk != nil && ev.Seq > bk.seq {
+			bk.seq = ev.Seq
+		}
+		h.mu.Unlock()
+		if ev.UserID != uuid.Nil {
+			h.broadcastUser(ev.UserID, OutboundMsg{
+				Type:    "order.update",
+				Channel: "user.orders",
+				Symbol:  ev.Symbol,
+				Seq:     ev.Seq,
+				Data:    ev,
+			})
+		}
+		return
+	}
 	h.mu.Lock()
 	bk := h.books[ev.Symbol]
 	if bk == nil {
