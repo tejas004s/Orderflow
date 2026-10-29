@@ -4,6 +4,7 @@ name: orderflow
 
 x-service: &service
   image: orderflow:dev
+  pull_policy: never
   restart: unless-stopped
   environment: &env
     DATABASE_URL: postgres://orderflow:orderflow@postgres:5432/orderflow?sslmode=disable

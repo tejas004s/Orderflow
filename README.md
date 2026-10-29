@@ -67,6 +67,8 @@ Full details and reproduction commands in [`docs/benchmarks.md`](docs/benchmarks
 docker compose -f deploy/docker-compose.yml up -d --build --wait
 ```
 
+> **Note:** If an older Docker Compose version attempts to pull `orderflow:dev` from Docker Hub before building `init`, run `docker compose -f deploy/docker-compose.yml build init` first (fixed automatically on Compose v2.20+ via `pull_policy: never`).
+
 Then open:
 - **Trading Terminal (React UI):** [http://localhost:5173](http://localhost:5173)
 - **Grafana Exchange Health Dashboard:** [http://localhost:3000/d/orderflow-health](http://localhost:3000/d/orderflow-health) (`admin` / `admin`)
