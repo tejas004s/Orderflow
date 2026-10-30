@@ -2,6 +2,7 @@ import type {
   BookState,
   Candle,
   Instrument,
+  LeaderboardEntry,
   Order,
   Portfolio,
   TokenPair,
@@ -166,5 +167,31 @@ export const api = {
     return request<Order>(`/api/v1/orders/${orderId}`, {
       method: 'DELETE',
     });
+  },
+
+  getLeaderboard: async (): Promise<LeaderboardEntry[]> => {
+    const res = await request<{ leaderboard: LeaderboardEntry[] }>('/api/v1/leaderboard');
+    return res.leaderboard;
+  },
+
+  downloadFillsCSV: async (): Promise<void> => {
+    const auth = loadAuth();
+    const headers = new Headers();
+    if (auth?.access_token) {
+      headers.set('Authorization', `Bearer ${auth.access_token}`);
+    }
+    const res = await fetch('/api/v1/account/fills.csv', { headers });
+    if (!res.ok) {
+      throw new Error(`Failed to export CSV (HTTP ${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'orderflow_fills.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   },
 };

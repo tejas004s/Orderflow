@@ -150,21 +150,38 @@ type Hub struct {
 	Auth *auth.Service
 	Log  *slog.Logger
 
-	mu      sync.RWMutex
-	clients map[*client]struct{}
-	books   map[string]*symbolBook
-	lastPx  map[string]int64
+	mu          sync.RWMutex
+	clients     map[*client]struct{}
+	books       map[string]*symbolBook
+	lastPx      map[string]int64
+	haltedUntil map[string]int64 // symbol -> unix nano when LULD halt expires
 }
 
 // NewHub creates a WebSocket Hub.
 func NewHub(authSvc *auth.Service, log *slog.Logger) *Hub {
 	return &Hub{
-		Auth:    authSvc,
-		Log:     log,
-		clients: map[*client]struct{}{},
-		books:   map[string]*symbolBook{},
-		lastPx:  map[string]int64{},
+		Auth:        authSvc,
+		Log:         log,
+		clients:     map[*client]struct{}{},
+		books:       map[string]*symbolBook{},
+		lastPx:      map[string]int64{},
+		haltedUntil: map[string]int64{},
 	}
+}
+
+// IsHalted returns true and the expiry timestamp (unix nanos) if symbol is
+// currently halted by an LULD circuit breaker.
+func (h *Hub) IsHalted(symbol string) (bool, int64) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	until := h.haltedUntil[strings.ToUpper(strings.TrimSpace(symbol))]
+	if until <= 0 {
+		return false, 0
+	}
+	if time.Now().UnixNano() >= until {
+		return false, 0
+	}
+	return true, until
 }
 
 // ClientCount returns the number of active WebSocket connections.
@@ -198,6 +215,23 @@ func (h *Hub) LastPrice(symbol string) int64 {
 // owner if subscribed to user.orders).
 func (h *Hub) OnOrderEvent(ev events.OrderEvent) {
 	if ev.Kind == "DUPLICATE" {
+		return
+	}
+	if ev.Kind == "SYMBOL_HALTED" {
+		h.mu.Lock()
+		h.haltedUntil[strings.ToUpper(ev.Symbol)] = ev.HaltedUntil
+		if bk := h.books[ev.Symbol]; bk != nil && ev.Seq > bk.seq {
+			bk.seq = ev.Seq
+		}
+		h.mu.Unlock()
+		bookCh := "book:" + ev.Symbol
+		h.broadcastChannel(bookCh, OutboundMsg{
+			Type:    "symbol.halted",
+			Channel: bookCh,
+			Symbol:  ev.Symbol,
+			Seq:     ev.Seq,
+			Data:    ev,
+		})
 		return
 	}
 	if ev.Kind == "REPLACE_REJECT" {

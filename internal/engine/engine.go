@@ -13,6 +13,13 @@ var nsEvent = uuid.MustParse("6f1c1f5e-3b7a-4d0e-9a51-0e8f3c1d2b40")
 // remembered to discard re-published place commands. See ADR-002.
 const DefaultDedupeWindow = int64(10 * 60 * 1e9) // 10 minutes in ns
 
+// Default Limit-Up / Limit-Down (LULD) circuit breaker parameters.
+const (
+	DefaultLULDBandBps  = int64(1000)          // ±10% (1000 bps)
+	DefaultLULDWindow   = int64(5 * 60 * 1e9)  // 5-minute rolling reference price window (ns)
+	DefaultLULDCooldown = int64(30 * 1e9)      // 30-second halt cooldown (ns)
+)
+
 // Option configures an Engine.
 type Option func(*Engine)
 
@@ -22,11 +29,26 @@ func WithIndex(k IndexKind) Option { return func(e *Engine) { e.index = k } }
 // WithDedupeWindow sets the duplicate-detection window in nanoseconds.
 func WithDedupeWindow(ns int64) Option { return func(e *Engine) { e.seen.window = ns } }
 
+// WithCircuitBreaker enables Limit-Up / Limit-Down (LULD) trading halts when a
+// symbol's trade price moves more than bandBps (e.g. 1000 = ±10%) from its
+// rolling windowNs reference price, halting the symbol for cooldownNs.
+func WithCircuitBreaker(bandBps, windowNs, cooldownNs int64) Option {
+	return func(e *Engine) {
+		e.luldBandBps = bandBps
+		e.luldWindowNs = windowNs
+		e.luldCooldownNs = cooldownNs
+	}
+}
+
 // Engine owns the books of all symbols routed to it.
 type Engine struct {
 	books map[string]*Book
 	seen  dedupe
 	index IndexKind
+
+	luldBandBps    int64
+	luldWindowNs   int64
+	luldCooldownNs int64
 
 	// per-command scratch state
 	out  []Event
@@ -79,11 +101,28 @@ func (e *Engine) Process(cmd Command) []Event {
 	// elected only now, after the command's own matching is complete, so a
 	// command is never interleaved with the orders it triggers. The check is
 	// a map length lookup, so engines with no stop orders pay nothing.
-	if b := e.books[cmd.Symbol]; b != nil && len(b.stopOrders) > 0 {
+	if b := e.books[cmd.Symbol]; b != nil && len(b.stopOrders) > 0 && !b.Halted(cmd.Timestamp) {
 		e.triggerStops(b)
 	}
 	e.cmd = nil
 	return e.out
+}
+
+// checkHalt clears an expired LULD halt (re-anchoring the reference price) and
+// reports whether the book is currently halted at nowNs.
+func (e *Engine) checkHalt(b *Book, nowNs int64) bool {
+	if b.haltedUntil == 0 {
+		return false
+	}
+	if nowNs >= b.haltedUntil {
+		b.haltedUntil = 0
+		if b.lastTradePrice > 0 {
+			b.refPrice = b.lastTradePrice
+			b.refPriceTs = nowNs
+		}
+		return false
+	}
+	return true
 }
 
 func validPlace(c *Command) bool {
@@ -124,6 +163,10 @@ func (e *Engine) place(c *Command) {
 	if resting || held || !e.seen.add(c.OrderID, c.Timestamp) {
 		e.emit(b, Event{Kind: EvDuplicate, OrderID: c.OrderID, UserID: c.UserID,
 			Side: c.Side, Type: c.Type, Price: c.Price, Qty: c.Qty, Reason: ReasonDuplicateOrder})
+		return
+	}
+	if e.checkHalt(b, c.Timestamp) {
+		e.emitOrder(b, c, StatusRejected, ReasonHalted, 0, false)
 		return
 	}
 	if c.Type == Stop || c.Type == StopLimit {
@@ -291,6 +334,27 @@ func (e *Engine) trade(b *Book, taker, maker *order, px, qty int64) {
 		ev.Resting = true
 	}
 	e.emit(b, ev)
+
+	// Limit-Up / Limit-Down (LULD) circuit breaker check against the rolling
+	// reference price window.
+	if b.refPrice == 0 || (e.luldWindowNs > 0 && e.cmd.Timestamp-b.refPriceTs >= e.luldWindowNs) {
+		b.refPrice = px
+		b.refPriceTs = e.cmd.Timestamp
+	} else if e.luldBandBps > 0 && b.haltedUntil == 0 {
+		diff := px - b.refPrice
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff*10000 > b.refPrice*e.luldBandBps {
+			b.haltedUntil = e.cmd.Timestamp + e.luldCooldownNs
+			e.emit(b, Event{
+				Kind:        EvSymbolHalted,
+				Price:       px,
+				PrevPrice:   b.refPrice,
+				HaltedUntil: b.haltedUntil,
+			})
+		}
+	}
 }
 
 func (e *Engine) cancel(c *Command) {
@@ -355,6 +419,10 @@ func (e *Engine) replace(c *Command) {
 	if c.ID != uuid.Nil && !e.seen.add(c.ID, c.Timestamp) {
 		e.emit(b, Event{Kind: EvDuplicate, OrderID: c.OrderID, UserID: c.UserID,
 			Price: c.Price, Qty: c.Qty, Reason: ReasonDuplicateOrder})
+		return
+	}
+	if e.checkHalt(b, c.Timestamp) {
+		reject(b, ReasonHalted)
 		return
 	}
 	o, ok := b.orders[c.OrderID]

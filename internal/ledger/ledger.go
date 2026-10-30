@@ -25,16 +25,45 @@ import (
 // ConsumerName identifies ledger-service in the processed_events table.
 const ConsumerName = "ledger-service"
 
+// ExchangeFeesUserID is the system user that collects net exchange trading fees.
+var ExchangeFeesUserID = uuid.MustParse("00000000-0000-0000-0000-00000000fee5")
+
+// ExchangeFeesAccountRef is the double-entry ledger account_ref for exchange fee revenue.
+const ExchangeFeesAccountRef = "system:exchange_fees"
+
+// Default fee schedule in basis points (1 bps = 0.01%).
+const (
+	DefaultMakerFeeBps int64 = -1 // -1 bps maker rebate
+	DefaultTakerFeeBps int64 = 5  // +5 bps taker fee
+)
+
+// Option configures a ledger Service.
+type Option func(*Service)
+
+// WithFees configures maker rebate (negative bps) / fee and taker fee (positive bps).
+func WithFees(makerBps, takerBps int64) Option {
+	return func(s *Service) {
+		s.MakerFeeBps = makerBps
+		s.TakerFeeBps = takerBps
+	}
+}
+
 // Service applies trade and order events to PostgreSQL.
 type Service struct {
-	Pool *pgxpool.Pool
-	Pub  outbox.Publisher // optional: for DLQ routing
-	Log  *slog.Logger
+	Pool        *pgxpool.Pool
+	Pub         outbox.Publisher // optional: for DLQ routing
+	Log         *slog.Logger
+	MakerFeeBps int64
+	TakerFeeBps int64
 }
 
 // NewService creates a ledger Service.
-func NewService(pool *pgxpool.Pool, pub outbox.Publisher, log *slog.Logger) *Service {
-	return &Service{Pool: pool, Pub: pub, Log: log}
+func NewService(pool *pgxpool.Pool, pub outbox.Publisher, log *slog.Logger, opts ...Option) *Service {
+	s := &Service{Pool: pool, Pub: pub, Log: log}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // HandleRaw decodes an envelope from orders.events or trades.executed and
@@ -117,14 +146,33 @@ func (s *Service) ApplyTrade(ctx context.Context, eventID uuid.UUID, tr events.T
 		return false, err
 	}
 
+	feesEnabled := s.TakerFeeBps != 0 || s.MakerFeeBps != 0
+	if feesEnabled {
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO users (id, email, password_hash, is_bot)
+			VALUES ($1, 'exchange_fees@system.orderflow', 'system', true)
+			ON CONFLICT (id) DO NOTHING
+		`, ExchangeFeesUserID)
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO accounts (user_id, currency, available, reserved)
+			VALUES ($1, 'USD', 0, 0)
+			ON CONFLICT (user_id, currency) DO NOTHING
+		`, ExchangeFeesUserID)
+	}
+
 	userIDs := []uuid.UUID{tr.BuyerID, tr.SellerID}
+	if feesEnabled {
+		userIDs = append(userIDs, ExchangeFeesUserID)
+	}
 	sortUUIDs(userIDs)
 	for _, uid := range userIDs {
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM accounts WHERE user_id = $1 AND currency = 'USD' FOR UPDATE`, uid); err != nil {
 			return false, err
 		}
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM positions WHERE user_id = $1 AND symbol = $2 FOR UPDATE`, uid, tr.Symbol); err != nil {
-			return false, err
+		if uid != ExchangeFeesUserID {
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM positions WHERE user_id = $1 AND symbol = $2 FOR UPDATE`, uid, tr.Symbol); err != nil {
+				return false, err
+			}
 		}
 	}
 
@@ -175,6 +223,57 @@ func (s *Service) ApplyTrade(ctx context.Context, eventID uuid.UUID, tr events.T
 	`, cost, tr.SellerID)
 	if err != nil {
 		return false, fmt.Errorf("credit seller cash: %w", err)
+	}
+
+	// 5b. Settle maker rebate / taker fee into the system EXCHANGE_FEES account.
+	var makerFee, takerFee int64
+	takerID, makerID := tr.BuyerID, tr.SellerID
+	if tr.AggressorSide == "SELL" {
+		takerID, makerID = tr.SellerID, tr.BuyerID
+	}
+	if feesEnabled {
+		if s.TakerFeeBps > 0 {
+			var takerAvail int64
+			if err := tx.QueryRow(ctx, `SELECT available FROM accounts WHERE user_id = $1 AND currency = 'USD'`, takerID).Scan(&takerAvail); err != nil {
+				return false, err
+			}
+			takerFee = min((cost*s.TakerFeeBps)/10000, takerAvail)
+		}
+		if s.MakerFeeBps < 0 {
+			rebate := min((cost*(-s.MakerFeeBps))/10000, takerFee)
+			makerFee = -rebate
+		} else if s.MakerFeeBps > 0 {
+			var makerAvail int64
+			if err := tx.QueryRow(ctx, `SELECT available FROM accounts WHERE user_id = $1 AND currency = 'USD'`, makerID).Scan(&makerAvail); err != nil {
+				return false, err
+			}
+			makerFee = min((cost*s.MakerFeeBps)/10000, makerAvail)
+		}
+		if takerFee > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE accounts SET available = available - $1 WHERE user_id = $2 AND currency = 'USD'
+			`, takerFee, takerID); err != nil {
+				return false, fmt.Errorf("debit taker fee: %w", err)
+			}
+		}
+		if makerFee != 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE accounts SET available = available - $1 WHERE user_id = $2 AND currency = 'USD'
+			`, makerFee, makerID); err != nil {
+				return false, fmt.Errorf("apply maker fee/rebate: %w", err)
+			}
+		}
+		netExchangeFee := takerFee + makerFee
+		if netExchangeFee != 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE accounts SET available = available + $1 WHERE user_id = $2 AND currency = 'USD'
+			`, netExchangeFee, ExchangeFeesUserID); err != nil {
+				return false, fmt.Errorf("credit exchange fee account: %w", err)
+			}
+		}
+		_, _ = tx.Exec(ctx, `
+			UPDATE trades SET maker_fee = $1, taker_fee = $2 WHERE match_id = $3
+		`, makerFee, takerFee, tr.MatchID)
 	}
 
 	// 6. Move shares: deduct from seller.reserved_qty, add to buyer.qty and
@@ -247,16 +346,37 @@ func (s *Service) ApplyTrade(ctx context.Context, eventID uuid.UUID, tr events.T
 	// For each (txn_id, asset), sum(DEBIT) == sum(CREDIT).
 	buyerRef := "user:" + tr.BuyerID.String()
 	sellerRef := "user:" + tr.SellerID.String()
-	entries := []struct {
+	takerRef := "user:" + takerID.String()
+	makerRef := "user:" + makerID.String()
+	type ledgerRow struct {
 		account   string
 		asset     string
 		direction string
 		amount    int64
-	}{
+	}
+	entries := []ledgerRow{
 		{buyerRef, "USD", "CREDIT", cost},
 		{sellerRef, "USD", "DEBIT", cost},
 		{sellerRef, tr.Symbol, "CREDIT", tr.Qty},
 		{buyerRef, tr.Symbol, "DEBIT", tr.Qty},
+	}
+	if takerFee > 0 {
+		entries = append(entries,
+			ledgerRow{takerRef, "USD", "CREDIT", takerFee},
+			ledgerRow{ExchangeFeesAccountRef, "USD", "DEBIT", takerFee},
+		)
+	}
+	if makerFee < 0 {
+		rebate := -makerFee
+		entries = append(entries,
+			ledgerRow{ExchangeFeesAccountRef, "USD", "CREDIT", rebate},
+			ledgerRow{makerRef, "USD", "DEBIT", rebate},
+		)
+	} else if makerFee > 0 {
+		entries = append(entries,
+			ledgerRow{makerRef, "USD", "CREDIT", makerFee},
+			ledgerRow{ExchangeFeesAccountRef, "USD", "DEBIT", makerFee},
+		)
 	}
 	for _, e := range entries {
 		_, err = tx.Exec(ctx, `
@@ -282,7 +402,7 @@ func (s *Service) ApplyOrderEvent(ctx context.Context, eventID uuid.UUID, ev eve
 	if eventID == uuid.Nil {
 		eventID = ev.EventID
 	}
-	if ev.Kind == "DUPLICATE" || ev.Kind == "CANCEL_REJECT" {
+	if ev.Kind == "DUPLICATE" || ev.Kind == "CANCEL_REJECT" || ev.Kind == "SYMBOL_HALTED" {
 		return false, nil
 	}
 

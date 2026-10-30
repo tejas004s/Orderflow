@@ -18,6 +18,7 @@ class ExchangeWSClient {
   private pendingTrades: Record<string, Trade[]> = {};
   private pendingPrices: Record<string, number> = {};
   private pendingCandles: Record<string, Candle> = {};
+  private pendingHalted: Record<string, number> = {};
   private pendingOrderUpdates = 0;
 
   start(symbol: string): void {
@@ -141,6 +142,13 @@ class ExchangeWSClient {
         this.pendingOrderUpdates++;
         break;
       }
+      case 'symbol.halted': {
+        const ev = msg.data as { symbol: string; halted_until?: number };
+        if (ev?.symbol && ev.halted_until) {
+          this.pendingHalted[ev.symbol] = Math.floor(ev.halted_until / 1_000_000);
+        }
+        break;
+      }
     }
 
     if (this.rafId === null) {
@@ -155,12 +163,14 @@ class ExchangeWSClient {
       trades: this.pendingTrades,
       prices: this.pendingPrices,
       candles: this.pendingCandles,
+      halted: this.pendingHalted,
       orderUpdates: this.pendingOrderUpdates,
     };
     this.pendingBooks = {};
     this.pendingTrades = {};
     this.pendingPrices = {};
     this.pendingCandles = {};
+    this.pendingHalted = {};
     this.pendingOrderUpdates = 0;
 
     useMarketStore.getState().applyBatch(batch);

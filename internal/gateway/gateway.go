@@ -3,8 +3,10 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -68,6 +70,7 @@ func (s *Server) Router(baseMux *http.ServeMux) http.Handler {
 		api.Get("/trades", s.handleTrades)
 		api.Get("/book/{symbol}", s.handleBook)
 		api.Get("/candles/{symbol}", s.handleCandles)
+		api.Get("/leaderboard", s.handleLeaderboard)
 
 		api.Group(func(priv chi.Router) {
 			priv.Use(s.Auth.RequireAuth)
@@ -78,6 +81,7 @@ func (s *Server) Router(baseMux *http.ServeMux) http.Handler {
 			priv.Patch("/orders/{id}", s.handleReplaceOrder)
 			priv.Get("/orders", s.handleListOrders)
 			priv.Get("/portfolio", s.handlePortfolio)
+			priv.Get("/account/fills.csv", s.handleFillsCSV)
 			// Demo helper: allow users/bots to seed shares or top up virtual cash
 			priv.Post("/portfolio/seed", s.handleSeedPortfolio)
 		})
@@ -179,7 +183,8 @@ func (s *Server) handleInstruments(w http.ResponseWriter, r *http.Request) {
 
 	type instView struct {
 		order.Instrument
-		LastPrice int64 `json:"last_price"`
+		LastPrice   int64 `json:"last_price"`
+		HaltedUntil int64 `json:"halted_until,omitempty"`
 	}
 	out := []instView{}
 	for rows.Next() {
@@ -192,6 +197,10 @@ func (s *Server) handleInstruments(w http.ResponseWriter, r *http.Request) {
 			iv.LastPrice = lp
 		} else {
 			iv.LastPrice = iv.RefPrice
+		}
+		if halted, until := s.Hub.IsHalted(iv.Symbol); halted {
+			iv.Status = "HALTED"
+			iv.HaltedUntil = until
 		}
 		out = append(out, iv)
 	}
@@ -255,9 +264,15 @@ func (s *Server) handleTrades(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	sym := strings.ToUpper(chi.URLParam(r, "symbol"))
-	interval := r.URL.Query().Get("interval")
+	interval := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("interval")))
 	if interval == "" {
 		interval = "1m"
+	}
+	switch interval {
+	case "1m", "5m", "15m", "1h":
+	default:
+		httpx.WriteProblem(w, r, http.StatusBadRequest, "Invalid Interval", "interval must be one of 1m, 5m, 15m, 1h")
+		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 500 {
@@ -368,6 +383,163 @@ func (s *Server) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 		"total_unrealised_pnl": totalUnrealisedPnL,
 		"total_equity":         avail + reserved + totalMarketValue,
 	})
+}
+
+func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.Pool.Query(r.Context(), `
+		WITH mark_prices AS (
+			SELECT i.symbol,
+			       COALESCE(
+			           (SELECT t.price FROM trades t WHERE t.symbol = i.symbol ORDER BY t.id DESC LIMIT 1),
+			           i.ref_price
+			       ) AS mark_price
+			FROM instruments i
+		),
+		pos_val AS (
+			SELECT p.user_id,
+			       COALESCE(SUM((p.qty + p.reserved_qty) * mp.mark_price), 0)::BIGINT AS market_value,
+			       COALESCE(SUM((p.qty + p.reserved_qty) * (mp.mark_price - p.avg_cost)), 0)::BIGINT AS unrealised_pnl
+			FROM positions p
+			JOIN mark_prices mp ON mp.symbol = p.symbol
+			GROUP BY p.user_id
+		),
+		trade_counts AS (
+			SELECT u.id AS user_id,
+			       COUNT(t.id)::INT AS trade_count
+			FROM users u
+			LEFT JOIN trades t ON t.buyer_id = u.id OR t.seller_id = u.id
+			GROUP BY u.id
+		)
+		SELECT u.id,
+		       u.email,
+		       COALESCE(a.available + a.reserved, 0)::BIGINT AS cash_total,
+		       COALESCE(pv.market_value, 0)::BIGINT AS market_value,
+		       COALESCE(pv.unrealised_pnl, 0)::BIGINT AS unrealised_pnl,
+		       (COALESCE(a.available + a.reserved, 0) + COALESCE(pv.market_value, 0))::BIGINT AS total_equity,
+		       COALESCE(tc.trade_count, 0) AS trade_count
+		FROM users u
+		JOIN accounts a ON a.user_id = u.id AND a.currency = 'USD'
+		LEFT JOIN pos_val pv ON pv.user_id = u.id
+		LEFT JOIN trade_counts tc ON tc.user_id = u.id
+		WHERE u.id <> '00000000-0000-0000-0000-00000000fee5'
+		ORDER BY total_equity DESC, trade_count DESC
+		LIMIT 25
+	`)
+	if err != nil {
+		httpx.WriteProblem(w, r, http.StatusInternalServerError, "Database Error", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type leaderRow struct {
+		Rank          int       `json:"rank"`
+		UserID        uuid.UUID `json:"user_id"`
+		Trader        string    `json:"trader"`
+		CashTotal     int64     `json:"cash_total"`
+		MarketValue   int64     `json:"market_value"`
+		UnrealisedPnL int64     `json:"unrealised_pnl"`
+		TotalEquity   int64     `json:"total_equity"`
+		TradeCount    int       `json:"trade_count"`
+	}
+	out := []leaderRow{}
+	rank := 1
+	for rows.Next() {
+		var row leaderRow
+		var email string
+		if err := rows.Scan(&row.UserID, &email, &row.CashTotal, &row.MarketValue, &row.UnrealisedPnL, &row.TotalEquity, &row.TradeCount); err != nil {
+			httpx.WriteProblem(w, r, http.StatusInternalServerError, "Database Error", err.Error())
+			return
+		}
+		row.Rank = rank
+		rank++
+		// Mask email local-part for display privacy while keeping it recognizable
+		if at := strings.IndexByte(email, '@'); at > 0 {
+			row.Trader = email[:at]
+		} else {
+			row.Trader = email
+		}
+		out = append(out, row)
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"leaderboard": out})
+}
+
+func (s *Server) handleFillsCSV(w http.ResponseWriter, r *http.Request) {
+	uid := auth.UserIDFromContext(r.Context())
+	rows, err := s.Pool.Query(r.Context(), `
+		SELECT id, match_id, symbol, price, qty,
+		       buyer_id, seller_id, buy_order_id, sell_order_id,
+		       aggressor_side, COALESCE(maker_fee, 0), COALESCE(taker_fee, 0), executed_at
+		FROM trades
+		WHERE buyer_id = $1 OR seller_id = $1
+		ORDER BY executed_at DESC, id DESC
+		LIMIT 5000
+	`, uid)
+	if err != nil {
+		httpx.WriteProblem(w, r, http.StatusInternalServerError, "Database Error", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="orderflow_fills.csv"`)
+	w.WriteHeader(http.StatusOK)
+
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{
+		"trade_id", "match_id", "symbol", "side", "role", "order_id",
+		"price_usd", "qty", "notional_usd", "fee_usd", "executed_at",
+	})
+
+	for rows.Next() {
+		var (
+			id                      int64
+			matchID                 uuid.UUID
+			symbol                  string
+			price, qty              int64
+			buyerID, sellerID       uuid.UUID
+			buyOrderID, sellOrderID uuid.UUID
+			aggressorSide           string
+			makerFee, takerFee      int64
+			executedAt              time.Time
+		)
+		if err := rows.Scan(&id, &matchID, &symbol, &price, &qty,
+			&buyerID, &sellerID, &buyOrderID, &sellOrderID,
+			&aggressorSide, &makerFee, &takerFee, &executedAt); err != nil {
+			break
+		}
+
+		// If self-trade or user on one side, emit a row per side the user participated in.
+		emitSide := func(side string, orderID uuid.UUID) {
+			isTaker := (side == aggressorSide)
+			role := "MAKER"
+			fee := makerFee
+			if isTaker {
+				role = "TAKER"
+				fee = takerFee
+			}
+			notional := price * qty
+			_ = cw.Write([]string{
+				strconv.FormatInt(id, 10),
+				matchID.String(),
+				symbol,
+				side,
+				role,
+				orderID.String(),
+				fmt.Sprintf("%.2f", float64(price)/100.0),
+				strconv.FormatInt(qty, 10),
+				fmt.Sprintf("%.2f", float64(notional)/100.0),
+				fmt.Sprintf("%.2f", float64(fee)/100.0),
+				executedAt.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if buyerID == uid {
+			emitSide("BUY", buyOrderID)
+		}
+		if sellerID == uid {
+			emitSide("SELL", sellOrderID)
+		}
+	}
+	cw.Flush()
 }
 
 func (s *Server) handleSeedPortfolio(w http.ResponseWriter, r *http.Request) {

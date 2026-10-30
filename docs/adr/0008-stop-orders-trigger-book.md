@@ -38,3 +38,4 @@ Key design requirements:
   - Seamless settlement via existing double-entry ledger and price-improvement refund logic.
 - **Cons:**
   - Cascading stop elections execute synchronously within the triggering command's partition goroutine.
+

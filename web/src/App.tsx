@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, loadAuth, saveAuth } from './api';
 import { OrderBook } from './components/OrderBook';
 import { OrderTicket } from './components/OrderTicket';
-import { PositionsTable } from './components/PositionsTable';
-import { PriceChart } from './components/PriceChart';
+import { PositionsTable, type EquityPoint } from './components/PositionsTable';
+import { PriceChart, type CandleInterval } from './components/PriceChart';
 import { TradeTape } from './components/TradeTape';
 import { useMarketStore } from './store/marketStore';
 import { formatPrice, formatUSD, type Instrument, type TokenPair } from './types';
@@ -27,6 +27,9 @@ export const App: React.FC = () => {
   const [email, setEmail] = useState('trader@orderflow.dev');
   const [password, setPassword] = useState('trader123');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [candleInterval, setCandleInterval] = useState<CandleInterval>('1m');
+  const [equityHistory, setEquityHistory] = useState<EquityPoint[]>([]);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const queryClient = useQueryClient();
   const connected = useMarketStore((s) => s.connected);
@@ -36,6 +39,7 @@ export const App: React.FC = () => {
   const tradesMap = useMarketStore((s) => s.trades);
   const lastPrices = useMarketStore((s) => s.lastPrices);
   const latestCandle = useMarketStore((s) => s.latestCandle);
+  const haltedUntilMap = useMarketStore((s) => s.haltedUntil);
   const orderEventTick = useMarketStore((s) => s.orderEventTick);
   const setSelectedSymbol = useMarketStore((s) => s.setSelectedSymbol);
   const setDraftPriceCents = useMarketStore((s) => s.setDraftPriceCents);
@@ -49,8 +53,8 @@ export const App: React.FC = () => {
   });
 
   const candlesQuery = useQuery({
-    queryKey: ['candles', selectedSymbol],
-    queryFn: () => api.getCandles(selectedSymbol, '1m', 120),
+    queryKey: ['candles', selectedSymbol, candleInterval],
+    queryFn: () => api.getCandles(selectedSymbol, candleInterval, 120),
     refetchInterval: 15000,
   });
 
@@ -67,6 +71,29 @@ export const App: React.FC = () => {
     enabled: Boolean(auth),
     refetchInterval: 4000,
   });
+
+  const leaderboardQuery = useQuery({
+    queryKey: ['leaderboard', orderEventTick],
+    queryFn: api.getLeaderboard,
+    enabled: Boolean(auth),
+    refetchInterval: 8000,
+  });
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const eq = portfolioQuery.data?.total_equity;
+    if (typeof eq !== 'number') return;
+    setEquityHistory((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1].equity === eq && prev.length >= 2) {
+        return prev;
+      }
+      return [...prev.slice(-119), { ts: Date.now(), equity: eq }];
+    });
+  }, [portfolioQuery.data?.total_equity]);
 
   useEffect(() => {
     if (!auth) return;
@@ -205,6 +232,13 @@ export const App: React.FC = () => {
 
   const portfolio = portfolioQuery.data;
   const currentPos = portfolio?.positions.find((p) => p.symbol === selectedSymbol);
+  const wsHaltUntilMs = haltedUntilMap[selectedSymbol] || 0;
+  const restHaltUntilMs = currentInstrument.halted_until
+    ? Math.floor(currentInstrument.halted_until / 1_000_000)
+    : 0;
+  const activeHaltUntilMs = Math.max(wsHaltUntilMs, restHaltUntilMs);
+  const isSymbolHalted =
+    currentInstrument.status === 'HALTED' || (activeHaltUntilMs > 0 && activeHaltUntilMs > nowMs);
 
   return (
     <div className="terminal-layout">
@@ -232,6 +266,26 @@ export const App: React.FC = () => {
               );
             })}
           </div>
+
+          {isSymbolHalted && (
+            <div
+              className="luld-halt-badge mono bold"
+              style={{
+                background: 'rgba(239, 68, 68, 0.2)',
+                border: '1px solid #ef4444',
+                color: '#fca5a5',
+                padding: '4px 10px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                letterSpacing: '0.04em',
+              }}
+            >
+              ⚠ TRADING HALTED (LULD)
+              {activeHaltUntilMs > nowMs
+                ? ` · ${Math.ceil((activeHaltUntilMs - nowMs) / 1000)}s`
+                : ''}
+            </div>
+          )}
         </div>
 
         <div className="topbar-right">
@@ -274,8 +328,14 @@ export const App: React.FC = () => {
       <main className="workspace-grid">
         <PriceChart
           symbol={selectedSymbol}
+          interval={candleInterval}
+          onChangeInterval={setCandleInterval}
           candles={candlesQuery.data || []}
-          liveCandle={latestCandle[selectedSymbol]}
+          liveCandle={
+            latestCandle[selectedSymbol]?.interval === candleInterval
+              ? latestCandle[selectedSymbol]
+              : undefined
+          }
         />
 
         <OrderBook
@@ -289,7 +349,11 @@ export const App: React.FC = () => {
         <TradeTape symbol={selectedSymbol} trades={currentTrades} />
 
         <OrderTicket
-          instrument={{ ...currentInstrument, last_price: livePrice }}
+          instrument={{
+            ...currentInstrument,
+            last_price: livePrice,
+            status: isSymbolHalted ? 'HALTED' : currentInstrument.status,
+          }}
           draftPriceCents={draftPriceCents}
           cashAvailable={portfolio?.cash_available ?? 0}
           sharesAvailable={currentPos?.qty ?? 0}
@@ -299,6 +363,9 @@ export const App: React.FC = () => {
         <PositionsTable
           positions={portfolio?.positions || []}
           orders={ordersQuery.data || []}
+          leaderboard={leaderboardQuery.data || []}
+          equityHistory={equityHistory}
+          currentUserId={auth.user_id}
           onCancelOrder={handleCancelOrder}
           onSelectSymbol={setSelectedSymbol}
         />

@@ -114,7 +114,7 @@ func NewProcessor(pub outbox.Publisher, snaps SnapshotStore, log *slog.Logger) *
 // InitPartition restores a partition's engine from SnapshotStore if available
 // and returns the next offset to consume from.
 func (p *Processor) InitPartition(ctx context.Context, part int32) (int64, error) {
-	eng := engine.New()
+	eng := engine.New(engine.WithCircuitBreaker(engine.DefaultLULDBandBps, engine.DefaultLULDWindow, engine.DefaultLULDCooldown))
 	var nextOffset int64
 	if p.Snapshots != nil {
 		off, blob, ok, err := p.Snapshots.Load(ctx, part)
@@ -143,7 +143,7 @@ func (p *Processor) HandleRaw(ctx context.Context, part int32, offset int64, key
 	p.mu.Lock()
 	st, ok := p.partitions[part]
 	if !ok {
-		st = &partState{eng: engine.New()}
+		st = &partState{eng: engine.New(engine.WithCircuitBreaker(engine.DefaultLULDBandBps, engine.DefaultLULDWindow, engine.DefaultLULDCooldown))}
 		p.partitions[part] = st
 	}
 	p.mu.Unlock()

@@ -7,6 +7,7 @@ export interface Instrument {
   ref_price: number;
   last_price: number;
   status: 'ACTIVE' | 'HALTED';
+  halted_until?: number;
 }
 
 export interface Level {
@@ -84,6 +85,17 @@ export interface Portfolio {
   total_equity: number;
 }
 
+export interface LeaderboardEntry {
+  rank: number;
+  user_id: string;
+  trader: string;
+  cash_total: number;
+  market_value: number;
+  unrealised_pnl: number;
+  total_equity: number;
+  trade_count: number;
+}
+
 export interface TokenPair {
   user_id: string;
   email: string;
@@ -93,7 +105,14 @@ export interface TokenPair {
 }
 
 export interface WSOutboundMsg {
-  type: 'book.snapshot' | 'book.delta' | 'trade' | 'tick' | 'candle' | 'order.update';
+  type:
+    | 'book.snapshot'
+    | 'book.delta'
+    | 'trade'
+    | 'tick'
+    | 'candle'
+    | 'order.update'
+    | 'symbol.halted';
   channel?: string;
   symbol?: string;
   seq?: number;

@@ -16,6 +16,9 @@ type snapshot struct {
 	Version     int        `json:"v"`
 	DedupeWin   int64      `json:"dedupe_window"`
 	DedupeMaxTS int64      `json:"dedupe_max_ts"`
+	LULDBps     int64      `json:"luld_bps,omitempty"`
+	LULDWin     int64      `json:"luld_win,omitempty"`
+	LULDCool    int64      `json:"luld_cool,omitempty"`
 	Seen        []seenSnap `json:"seen"`
 	Books       []bookSnap `json:"books"`
 }
@@ -31,7 +34,10 @@ type bookSnap struct {
 	// LastPx is the last trade price, which decides when stops trigger. It is
 	// part of the state because a restored engine must trigger exactly the
 	// stops an uninterrupted one would.
-	LastPx int64 `json:"last_px,omitempty"`
+	LastPx    int64 `json:"last_px,omitempty"`
+	RefPx     int64 `json:"ref_px,omitempty"`
+	RefTS     int64 `json:"ref_ts,omitempty"`
+	HaltUntil int64 `json:"halt_until,omitempty"`
 	// Orders in priority order: bids best->worst (FIFO within a level),
 	// then asks best->worst. Re-inserting in this order restores priority.
 	Orders []orderSnap `json:"orders"`
@@ -63,7 +69,14 @@ type orderSnap struct {
 
 // Snapshot serialises the full engine state deterministically.
 func (e *Engine) Snapshot() ([]byte, error) {
-	s := snapshot{Version: snapshotVersion, DedupeWin: e.seen.window, DedupeMaxTS: e.seen.maxTS}
+	s := snapshot{
+		Version:     snapshotVersion,
+		DedupeWin:   e.seen.window,
+		DedupeMaxTS: e.seen.maxTS,
+		LULDBps:     e.luldBandBps,
+		LULDWin:     e.luldWindowNs,
+		LULDCool:    e.luldCooldownNs,
+	}
 	for _, se := range e.seen.entries() {
 		s.Seen = append(s.Seen, seenSnap{se.id, se.ts})
 	}
@@ -74,7 +87,15 @@ func (e *Engine) Snapshot() ([]byte, error) {
 	sort.Strings(syms)
 	for _, sym := range syms {
 		b := e.books[sym]
-		bs := bookSnap{Symbol: sym, Seq: b.seq, LastPx: b.lastTradePrice, Orders: make([]orderSnap, 0, len(b.orders))}
+		bs := bookSnap{
+			Symbol:    sym,
+			Seq:       b.seq,
+			LastPx:    b.lastTradePrice,
+			RefPx:     b.refPrice,
+			RefTS:     b.refPriceTs,
+			HaltUntil: b.haltedUntil,
+			Orders:    make([]orderSnap, 0, len(b.orders)),
+		}
 		for _, idx := range []levelIndex{b.bids, b.asks} {
 			idx.ascend(func(l *level) bool {
 				for o := l.head; o != nil; o = o.next {
@@ -105,7 +126,11 @@ func Restore(data []byte, opts ...Option) (*Engine, error) {
 	if s.Version != snapshotVersion {
 		return nil, fmt.Errorf("unsupported snapshot version %d", s.Version)
 	}
-	e := New(append([]Option{WithDedupeWindow(s.DedupeWin)}, opts...)...)
+	baseOpts := []Option{WithDedupeWindow(s.DedupeWin)}
+	if s.LULDBps > 0 {
+		baseOpts = append(baseOpts, WithCircuitBreaker(s.LULDBps, s.LULDWin, s.LULDCool))
+	}
+	e := New(append(baseOpts, opts...)...)
 	e.seen.maxTS = s.DedupeMaxTS
 	for _, se := range s.Seen {
 		e.seen.ids[se.ID] = struct{}{}
@@ -115,6 +140,9 @@ func Restore(data []byte, opts ...Option) (*Engine, error) {
 		b := e.book(bs.Symbol)
 		b.seq = bs.Seq
 		b.lastTradePrice = bs.LastPx
+		b.refPrice = bs.RefPx
+		b.refPriceTs = bs.RefTS
+		b.haltedUntil = bs.HaltUntil
 		for _, os := range bs.Orders {
 			b.rest(&order{id: os.ID, user: os.User, side: os.Side, price: os.Price,
 				qty: os.Qty, filled: os.Filled, ts: os.TS})

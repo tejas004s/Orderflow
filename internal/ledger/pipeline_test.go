@@ -698,3 +698,69 @@ func TestOrderReplaceEndToEnd(t *testing.T) {
 		t.Fatalf("reconcile after trade: %v", err)
 	}
 }
+
+func TestMakerTakerFeesAndReconcile(t *testing.T) {
+	pool, _ := testpg.New(t)
+	ctx := context.Background()
+	silentLog := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Seed Alice (Taker Buyer) with $10,000.00 (1,000,000 cents) and Bob (Maker Seller) with 100 AAPL shares.
+	alice := seedUser(t, ctx, pool, "alice-fee@example.com", 1_000_000, "", 0, 0)
+	bob := seedUser(t, ctx, pool, "bob-fee@example.com", 0, "AAPL", 100, 15000)
+
+	cmdBus := &memBus{}
+	relay := outbox.NewRelay(pool, cmdBus, silentLog)
+	ordSvc := order.NewService(pool, relay)
+	engineBus := &memBus{}
+	proc := matching.NewProcessor(engineBus, matching.PGSnapshotStore{Pool: pool}, silentLog)
+	// Configure Maker = -1 bps rebate, Taker = +5 bps fee.
+	ledgerSvc := ledger.NewService(pool, nil, silentLog, ledger.WithFees(-1, 5))
+
+	// Bob rests 10 AAPL @ $200.00 (20000 cents) -> notional = $2,000.00 (200,000 cents).
+	if _, _, err := ordSvc.PlaceOrder(ctx, order.PlaceRequest{
+		UserID: bob, IdempotencyKey: "bob-maker", Symbol: "AAPL", Side: "SELL", Type: "LIMIT", Price: 20000, Qty: 10,
+	}); err != nil {
+		t.Fatalf("bob place: %v", err)
+	}
+	// Alice takes 10 AAPL @ $200.00 (20000 cents).
+	if _, _, err := ordSvc.PlaceOrder(ctx, order.PlaceRequest{
+		UserID: alice, IdempotencyKey: "alice-taker", Symbol: "AAPL", Side: "BUY", Type: "LIMIT", Price: 20000, Qty: 10,
+	}); err != nil {
+		t.Fatalf("alice place: %v", err)
+	}
+
+	_, _ = relay.DrainBatch(ctx)
+	for i, m := range cmdBus.takeAll() {
+		if err := proc.HandleRaw(ctx, 0, int64(i), m.Key, m.Payload); err != nil {
+			t.Fatalf("engine: %v", err)
+		}
+	}
+	for _, m := range engineBus.takeAll() {
+		if err := ledgerSvc.HandleRaw(ctx, m.Topic, m.Key, m.Payload); err != nil {
+			t.Fatalf("ledger: %v", err)
+		}
+	}
+
+	// Notional = 200,000 cents.
+	// Taker fee (Alice) = 5 bps of 200,000 = 100 cents ($1.00).
+	// Maker rebate (Bob) = 1 bps of 200,000 = 20 cents ($0.20).
+	// Net Exchange Fee revenue = 100 - 20 = 80 cents ($0.80).
+	var aliceAvail, bobAvail, exchAvail int64
+	_ = pool.QueryRow(ctx, `SELECT available FROM accounts WHERE user_id = $1`, alice).Scan(&aliceAvail)
+	_ = pool.QueryRow(ctx, `SELECT available FROM accounts WHERE user_id = $1`, bob).Scan(&bobAvail)
+	_ = pool.QueryRow(ctx, `SELECT available FROM accounts WHERE user_id = $1`, ledger.ExchangeFeesUserID).Scan(&exchAvail)
+
+	if aliceAvail != 1_000_000-200_000-100 {
+		t.Fatalf("expected aliceAvail=%d, got %d", 1_000_000-200_000-100, aliceAvail)
+	}
+	if bobAvail != 200_000+20 {
+		t.Fatalf("expected bobAvail=%d, got %d", 200_000+20, bobAvail)
+	}
+	if exchAvail != 80 {
+		t.Fatalf("expected exchange fee account avail=80, got %d", exchAvail)
+	}
+
+	if _, err := ledger.Reconcile(ctx, pool); err != nil {
+		t.Fatalf("reconcile with maker-taker fees failed: %v", err)
+	}
+}

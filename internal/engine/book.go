@@ -279,6 +279,11 @@ type Book struct {
 	seq            uint64
 	lastTradePrice int64
 
+	// Limit-Up / Limit-Down (LULD) circuit breaker state.
+	refPrice    int64 // rolling 5-minute reference price
+	refPriceTs  int64 // timestamp (ns) when refPrice was anchored
+	haltedUntil int64 // timestamp (ns) when current trading halt expires (0 = active)
+
 	// Trigger book: stop orders indexed by trigger price.
 	// buyStops: lowest stopPrice first (triggers when lastTradePrice >= stopPrice).
 	// sellStops: highest stopPrice first (triggers when lastTradePrice <= stopPrice).
@@ -324,6 +329,15 @@ func (b *Book) LastTradePrice() int64 { return b.lastTradePrice }
 
 // SetLastTradePrice sets the reference/last trade price.
 func (b *Book) SetLastTradePrice(px int64) { b.lastTradePrice = px }
+
+// Halted reports whether the symbol is currently in a LULD trading halt at nowNs.
+func (b *Book) Halted(nowNs int64) bool { return b.haltedUntil > 0 && nowNs < b.haltedUntil }
+
+// HaltedUntil returns the unix nanosecond timestamp when the current halt expires (0 if active).
+func (b *Book) HaltedUntil() int64 { return b.haltedUntil }
+
+// RefPrice returns the current rolling LULD reference price.
+func (b *Book) RefPrice() int64 { return b.refPrice }
 
 // BestBid returns the best bid price, or 0 and false if there are no bids.
 func (b *Book) BestBid() (int64, bool) {

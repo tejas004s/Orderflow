@@ -189,9 +189,10 @@ type OrderEvent struct {
 	Status     string    `json:"status,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	Resting    bool      `json:"resting"`
-	PrevPrice  int64     `json:"prev_price,omitempty"`
-	PrevQty    int64     `json:"prev_qty,omitempty"`
-	PrevFilled int64     `json:"prev_filled,omitempty"`
+	PrevPrice   int64     `json:"prev_price,omitempty"`
+	PrevQty     int64     `json:"prev_qty,omitempty"`
+	PrevFilled  int64     `json:"prev_filled,omitempty"`
+	HaltedUntil int64     `json:"halted_until,omitempty"`
 }
 
 // TradeExecuted is the payload on topic trades.executed.
@@ -247,29 +248,32 @@ func FromEngineEvent(ev engine.Event) (*OrderEvent, *TradeExecuted) {
 		kind = "REPLACED"
 	case engine.EvReplaceReject:
 		kind = "REPLACE_REJECT"
+	case engine.EvSymbolHalted:
+		kind = "SYMBOL_HALTED"
 	}
 	return &OrderEvent{
-		EventID:    ev.ID,
-		CommandID:  ev.CommandID,
-		Kind:       kind,
-		Symbol:     ev.Symbol,
-		Seq:        ev.Seq,
-		Timestamp:  ev.Timestamp,
-		OrderID:    ev.OrderID,
-		UserID:     ev.UserID,
-		Side:       ev.Side.String(),
-		OrderType:  ev.Type.String(),
-		Price:      ev.Price,
-		StopPrice:  ev.StopPrice,
-		Qty:        ev.Qty,
-		FilledQty:  ev.FilledQty,
-		LeavesQty:  ev.LeavesQty,
-		Status:     ev.Status.String(),
-		Reason:     ev.Reason.String(),
-		Resting:    ev.Resting,
-		PrevPrice:  ev.PrevPrice,
-		PrevQty:    ev.PrevQty,
-		PrevFilled: ev.PrevFilled,
+		EventID:     ev.ID,
+		CommandID:   ev.CommandID,
+		Kind:        kind,
+		Symbol:      ev.Symbol,
+		Seq:         ev.Seq,
+		Timestamp:   ev.Timestamp,
+		OrderID:     ev.OrderID,
+		UserID:      ev.UserID,
+		Side:        ev.Side.String(),
+		OrderType:   ev.Type.String(),
+		Price:       ev.Price,
+		StopPrice:   ev.StopPrice,
+		Qty:         ev.Qty,
+		FilledQty:   ev.FilledQty,
+		LeavesQty:   ev.LeavesQty,
+		Status:      ev.Status.String(),
+		Reason:      ev.Reason.String(),
+		Resting:     ev.Resting,
+		PrevPrice:   ev.PrevPrice,
+		PrevQty:     ev.PrevQty,
+		PrevFilled:  ev.PrevFilled,
+		HaltedUntil: ev.HaltedUntil,
 	}, nil
 }
 

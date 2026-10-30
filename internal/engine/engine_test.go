@@ -1114,9 +1114,9 @@ func TestStopLimitOrderRestingAfterTrigger(t *testing.T) {
 	if rep.Status != StatusAccepted || !rep.Resting || rep.Price != 9400 || rep.LeavesQty != 12 {
 		t.Fatalf("expected triggered stop-limit to rest on book at 9400, got %+v", rep)
 	}
-	snap := h.e.Book("AAPL").Depth(5)
-	if len(snap.Asks) != 1 || snap.Asks[0].Price != 9400 || snap.Asks[0].Qty != 12 {
-		t.Fatalf("expected ask depth of 12 @ 9400, got %+v", snap.Asks)
+	_, asks := h.e.Book("AAPL").Depth(5)
+	if len(asks) != 1 || asks[0].Price != 9400 || asks[0].Qty != 12 {
+		t.Fatalf("expected ask depth of 12 @ 9400, got %+v", asks)
 	}
 }
 
@@ -1204,3 +1204,71 @@ func TestStopOrderSnapshotRestore(t *testing.T) {
 		}
 	}
 }
+
+func TestLULDCircuitBreakerHaltAndResume(t *testing.T) {
+	eng := New(WithCircuitBreaker(DefaultLULDBandBps, DefaultLULDWindow, DefaultLULDCooldown))
+
+	t0 := int64(1_000_000_000_000) // 1000s in ns
+
+	// 1. Seed reference price at $100.00 (10_000 cents) via initial trade.
+	eng.Process(Command{
+		ID: uid("luld-1"), Kind: CmdPlace, Symbol: "AAPL",
+		OrderID: uid("s-ref"), UserID: alice, Side: Sell, Type: Limit, Price: 10000, Qty: 10, Timestamp: t0,
+	})
+	evs := eng.Process(Command{
+		ID: uid("luld-2"), Kind: CmdPlace, Symbol: "AAPL",
+		OrderID: uid("b-ref"), UserID: bob, Side: Buy, Type: Limit, Price: 10000, Qty: 10, Timestamp: t0 + 1,
+	})
+	for _, ev := range evs {
+		if ev.Kind == EvSymbolHalted {
+			t.Fatalf("did not expect halt on initial trade, got %+v", ev)
+		}
+	}
+
+	// 2. Trade at $112.00 (+12% > +10% LULD band) within the 5m window -> triggers EvSymbolHalted.
+	eng.Process(Command{
+		ID: uid("luld-3"), Kind: CmdPlace, Symbol: "AAPL",
+		OrderID: uid("s-jump"), UserID: alice, Side: Sell, Type: Limit, Price: 11200, Qty: 5, Timestamp: t0 + 10_000_000_000,
+	})
+	haltEvs := eng.Process(Command{
+		ID: uid("luld-4"), Kind: CmdPlace, Symbol: "AAPL",
+		OrderID: uid("b-jump"), UserID: bob, Side: Buy, Type: Limit, Price: 11200, Qty: 5, Timestamp: t0 + 11_000_000_000,
+	})
+
+	var sawHalt bool
+	var haltedUntil int64
+	for _, ev := range haltEvs {
+		if ev.Kind == EvSymbolHalted {
+			sawHalt = true
+			haltedUntil = ev.HaltedUntil
+		}
+	}
+	if !sawHalt {
+		t.Fatalf("expected EvSymbolHalted after +12%% move, got %+v", haltEvs)
+	}
+	expectedUntil := (t0 + 11_000_000_000) + DefaultLULDCooldown
+	if haltedUntil != expectedUntil {
+		t.Fatalf("expected HaltedUntil=%d, got %d", expectedUntil, haltedUntil)
+	}
+
+	// 3. Incoming order during the 30s cooldown must be rejected with ReasonHalted.
+	rejEvs := eng.Process(Command{
+		ID: uid("luld-5"), Kind: CmdPlace, Symbol: "AAPL",
+		OrderID: uid("during-halt"), UserID: carol, Side: Buy, Type: Limit, Price: 11000, Qty: 5,
+		Timestamp: haltedUntil - 1_000_000_000, // 1s before cooldown ends
+	})
+	if len(rejEvs) != 1 || rejEvs[0].Status != StatusRejected || rejEvs[0].Reason != ReasonHalted {
+		t.Fatalf("expected StatusRejected/ReasonHalted during cooldown, got %+v", rejEvs)
+	}
+
+	// 4. Incoming order at or after haltedUntil is accepted as normal.
+	okEvs := eng.Process(Command{
+		ID: uid("luld-6"), Kind: CmdPlace, Symbol: "AAPL",
+		OrderID: uid("after-halt"), UserID: carol, Side: Buy, Type: Limit, Price: 11000, Qty: 5,
+		Timestamp: haltedUntil,
+	})
+	if len(okEvs) != 1 || okEvs[0].Status != StatusAccepted || !okEvs[0].Resting {
+		t.Fatalf("expected StatusAccepted after LULD cooldown expired, got %+v", okEvs)
+	}
+}
+

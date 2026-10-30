@@ -44,7 +44,12 @@ func main() {
 	}
 	d.Svc.OnClose(cons.Close)
 
-	svc := ledger.NewService(d.DB, outbox.FranzPublisher{Client: prod}, d.Log)
+	svc := ledger.NewService(
+		d.DB,
+		outbox.FranzPublisher{Client: prod},
+		d.Log,
+		ledger.WithFees(ledger.DefaultMakerFeeBps, ledger.DefaultTakerFeeBps),
+	)
 	d.Svc.AddWorker(func(ctx context.Context) error {
 		return svc.RunKafkaLoop(ctx, cons)
 	})

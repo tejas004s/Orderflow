@@ -230,24 +230,30 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
             <span>{side === 'BUY' ? 'Est. Reservation' : 'Est. Proceeds'}</span>
             <span className="mono">{formatUSD(estNotional)}</span>
           </div>
+          <div className="summary-row">
+            <span>Fee Tier</span>
+            <span className="mono muted">Maker -1 bps · Taker +5 bps</span>
+          </div>
         </div>
 
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || instrument.status === 'HALTED'}
           className={`submit-order-btn ${side === 'BUY' ? 'buy-submit' : 'sell-submit'}`}
         >
-          {submitting
-            ? 'Submitting…'
-            : `${side} ${qty > 0 ? qty : ''} ${instrument.symbol} @ ${
-                orderType === 'MARKET'
-                  ? 'MKT'
-                  : orderType === 'STOP'
-                    ? `Stop $${stopPriceStr}`
-                    : orderType === 'STOP_LIMIT'
-                      ? `$${priceStr} (Stop $${stopPriceStr})`
-                      : `$${priceStr}`
-              }`}
+          {instrument.status === 'HALTED'
+            ? `TRADING HALTED (LULD) · ${instrument.symbol}`
+            : submitting
+              ? 'Submitting…'
+              : `${side} ${qty > 0 ? qty : ''} ${instrument.symbol} @ ${
+                  orderType === 'MARKET'
+                    ? 'MKT'
+                    : orderType === 'STOP'
+                      ? `Stop $${stopPriceStr}`
+                      : orderType === 'STOP_LIMIT'
+                        ? `$${priceStr} (Stop $${stopPriceStr})`
+                        : `$${priceStr}`
+                }`}
         </button>
 
         {feedback && (

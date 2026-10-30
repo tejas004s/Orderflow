@@ -9,6 +9,7 @@ interface MarketStore {
   trades: Record<string, Trade[]>;
   lastPrices: Record<string, number>;
   latestCandle: Record<string, Candle>;
+  haltedUntil: Record<string, number>;
   orderEventTick: number;
   resyncNeeded: Record<string, boolean>;
 
@@ -23,6 +24,7 @@ interface MarketStore {
     trades: Record<string, Trade[]>;
     prices: Record<string, number>;
     candles: Record<string, Candle>;
+    halted: Record<string, number>;
     orderUpdates: number;
   }) => void;
 }
@@ -35,6 +37,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
   trades: {},
   lastPrices: {},
   latestCandle: {},
+  haltedUntil: {},
   orderEventTick: 0,
   resyncNeeded: {},
 
@@ -84,6 +87,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
         trades: nextTrades,
         lastPrices: { ...s.lastPrices, ...batch.prices },
         latestCandle: { ...s.latestCandle, ...batch.candles },
+        haltedUntil: { ...s.haltedUntil, ...batch.halted },
         orderEventTick: s.orderEventTick + batch.orderUpdates,
       };
     }),

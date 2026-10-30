@@ -148,12 +148,13 @@ const (
 	ReasonQtyTooLow      Reason = 9 // replace: new total qty <= already filled qty
 	ReasonNoChange       Reason = 10
 	ReasonStopHit        Reason = 11
+	ReasonHalted         Reason = 12 // LULD circuit breaker: symbol is halted
 )
 
 func (r Reason) String() string {
 	return [...]string{"", "USER_CANCEL", "IOC_REMAINDER", "NO_LIQUIDITY", "SELF_TRADE",
 		"INVALID", "DUPLICATE_ORDER", "UNKNOWN_ORDER", "PRICE_BAND",
-		"QTY_TOO_LOW", "NO_CHANGE", "STOP_WOULD_TRIGGER"}[r]
+		"QTY_TOO_LOW", "NO_CHANGE", "STOP_WOULD_TRIGGER", "SYMBOL_HALTED"}[r]
 }
 
 // EventKind distinguishes event payloads.
@@ -177,6 +178,11 @@ const (
 	// EvReplaceReject means a replace command could not be applied; the
 	// order is untouched. Reason says why.
 	EvReplaceReject EventKind = 6
+	// EvSymbolHalted is emitted when a trade moves the price beyond the
+	// Limit-Up / Limit-Down (LULD) circuit breaker band from the rolling
+	// reference price. Price is the triggering trade price, PrevPrice is the
+	// rolling reference price, and HaltedUntil is the cooldown expiry timestamp.
+	EvSymbolHalted EventKind = 7
 )
 
 // Event is an output of the engine.
@@ -217,6 +223,9 @@ type Event struct {
 	PrevPrice  int64
 	PrevQty    int64
 	PrevFilled int64
+
+	// EvSymbolHalted: unix nanosecond timestamp when the LULD halt expires.
+	HaltedUntil int64
 
 	// EvTrade
 	Trade Trade

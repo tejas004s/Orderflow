@@ -20,12 +20,22 @@ import (
 	"github.com/tejas004s/orderflow/internal/outbox"
 )
 
+var candleTimeframes = []struct {
+	interval string
+	dur      time.Duration
+}{
+	{"1m", time.Minute},
+	{"5m", 5 * time.Minute},
+	{"15m", 15 * time.Minute},
+	{"1h", time.Hour},
+}
+
 type symState struct {
 	symbol   string
 	tickSize int64
 	refPrice int64
 	price    float64
-	candle   *events.Candle
+	candles  map[string]*events.Candle
 }
 
 // Service runs the tick generator and candle aggregator.
@@ -81,6 +91,7 @@ func (s *Service) Init(ctx context.Context) error {
 			tickSize: max(tick, 1),
 			refPrice: ref,
 			price:    float64(ref),
+			candles:  map[string]*events.Candle{},
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -101,39 +112,26 @@ func (s *Service) Init(ctx context.Context) error {
 			}
 			continue
 		}
-		// Seed 60 historical 1-minute candles leading up to nowBucket.
+		// Seed 60 historical 1-minute candles (and roll up 5m, 15m, 1h) leading up to nowBucket.
 		px := float64(st.refPrice) * 0.98
 		for i := 60; i >= 1; i-- {
 			bStart := nowBucket.Add(-time.Duration(i) * time.Minute)
-			open := roundTick(px, st.tickSize)
-			high, low := open, open
-			var vol int64
 			for step := 0; step < 8; step++ {
 				px = stepGBM(s.rng, px, st.refPrice, s.Drift, s.Volatility, 1.0/(252*390*8))
 				p := roundTick(px, st.tickSize)
-				high = max(high, p)
-				low = min(low, p)
-				vol += int64(s.rng.IntN(40) + 5)
+				vol := int64(s.rng.IntN(40) + 5)
+				for _, cd := range s.applyPriceSampleLocked(st, p, vol, bStart) {
+					_ = s.upsertCandle(ctx, cd)
+				}
 			}
-			closePx := roundTick(px, st.tickSize)
-			_ = s.upsertCandle(ctx, events.Candle{
-				Symbol:      st.symbol,
-				Interval:    "1m",
-				BucketStart: bStart.Unix(),
-				Open:        open,
-				High:        high,
-				Low:         low,
-				Close:       closePx,
-				Volume:      vol,
-			})
 		}
 		st.price = px
 	}
 	return nil
 }
 
-// StepOnce advances every symbol by one GBM step, updates its current 1m
-// candle, persists to Postgres, and publishes tick + candle events.
+// StepOnce advances every symbol by one GBM step, updates its current 1m/5m/15m/1h
+// candles, persists to Postgres, and publishes tick + candle events.
 func (s *Service) StepOnce(ctx context.Context, now time.Time) error {
 	s.mu.Lock()
 	var msgs []outbox.Message
@@ -149,8 +147,8 @@ func (s *Service) StepOnce(ctx context.Context, now time.Time) error {
 			Volume:    0,
 			Timestamp: now.UnixNano(),
 		}
-		cd := s.applyPriceSampleLocked(st, px, 0, now)
-		toUpsert = append(toUpsert, cd)
+		cds := s.applyPriceSampleLocked(st, px, 0, now)
+		toUpsert = append(toUpsert, cds...)
 
 		if rawTick, err := events.Wrap(uuid.New(), events.TypeMarketTick, "marketdata-service", "", tk.Timestamp, tk); err == nil {
 			msgs = append(msgs, outbox.Message{
@@ -160,13 +158,15 @@ func (s *Service) StepOnce(ctx context.Context, now time.Time) error {
 				Headers: map[string]string{"event_type": events.TypeMarketTick},
 			})
 		}
-		if rawCandle, err := events.Wrap(uuid.New(), events.TypeCandle1m, "marketdata-service", "", now.UnixNano(), cd); err == nil {
-			msgs = append(msgs, outbox.Message{
-				Topic:   kafka.TopicCandles1m,
-				Key:     []byte(st.symbol),
-				Payload: rawCandle,
-				Headers: map[string]string{"event_type": events.TypeCandle1m},
-			})
+		for _, cd := range cds {
+			if rawCandle, err := events.Wrap(uuid.New(), events.TypeCandle1m, "marketdata-service", "", now.UnixNano(), cd); err == nil {
+				msgs = append(msgs, outbox.Message{
+					Topic:   kafka.TopicCandles1m,
+					Key:     []byte(st.symbol),
+					Payload: rawCandle,
+					Headers: map[string]string{"event_type": events.TypeCandle1m, "interval": cd.Interval},
+				})
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -185,7 +185,7 @@ func (s *Service) StepOnce(ctx context.Context, now time.Time) error {
 }
 
 // OnTrade incorporates an executed trade into the symbol's GBM anchor price and
-// 1-minute OHLCV candle (SDD section 10).
+// multi-timeframe OHLCV candles (`1m`, `5m`, `15m`, `1h`).
 func (s *Service) OnTrade(ctx context.Context, tr events.TradeExecuted) error {
 	ts := time.Unix(0, tr.ExecutedAt).UTC()
 	if tr.ExecutedAt == 0 {
@@ -195,49 +195,71 @@ func (s *Service) OnTrade(ctx context.Context, tr events.TradeExecuted) error {
 	s.mu.Lock()
 	st, ok := s.syms[tr.Symbol]
 	if !ok {
-		st = &symState{symbol: tr.Symbol, tickSize: 1, refPrice: tr.Price, price: float64(tr.Price)}
+		st = &symState{
+			symbol:   tr.Symbol,
+			tickSize: 1,
+			refPrice: tr.Price,
+			price:    float64(tr.Price),
+			candles:  map[string]*events.Candle{},
+		}
 		s.syms[tr.Symbol] = st
 	}
 	st.price = float64(tr.Price)
-	cd := s.applyPriceSampleLocked(st, tr.Price, tr.Qty, ts)
+	cds := s.applyPriceSampleLocked(st, tr.Price, tr.Qty, ts)
 	s.mu.Unlock()
 
-	if err := s.upsertCandle(ctx, cd); err != nil {
-		return err
-	}
-	if s.Pub != nil {
-		if raw, err := events.Wrap(uuid.New(), events.TypeCandle1m, "marketdata-service", "", ts.UnixNano(), cd); err == nil {
-			_ = s.Pub.Publish(ctx, []outbox.Message{{
-				Topic:   kafka.TopicCandles1m,
-				Key:     []byte(cd.Symbol),
-				Payload: raw,
-				Headers: map[string]string{"event_type": events.TypeCandle1m},
-			}})
+	var msgs []outbox.Message
+	for _, cd := range cds {
+		if err := s.upsertCandle(ctx, cd); err != nil {
+			return err
 		}
+		if s.Pub != nil {
+			if raw, err := events.Wrap(uuid.New(), events.TypeCandle1m, "marketdata-service", "", ts.UnixNano(), cd); err == nil {
+				msgs = append(msgs, outbox.Message{
+					Topic:   kafka.TopicCandles1m,
+					Key:     []byte(cd.Symbol),
+					Payload: raw,
+					Headers: map[string]string{"event_type": events.TypeCandle1m, "interval": cd.Interval},
+				})
+			}
+		}
+	}
+	if s.Pub != nil && len(msgs) > 0 {
+		_ = s.Pub.Publish(ctx, msgs)
 	}
 	return nil
 }
 
-func (s *Service) applyPriceSampleLocked(st *symState, price, vol int64, ts time.Time) events.Candle {
-	bucket := ts.UTC().Truncate(time.Minute).Unix()
-	if st.candle == nil || st.candle.BucketStart != bucket {
-		st.candle = &events.Candle{
-			Symbol:      st.symbol,
-			Interval:    "1m",
-			BucketStart: bucket,
-			Open:        price,
-			High:        price,
-			Low:         price,
-			Close:       price,
-			Volume:      vol,
-		}
-		return *st.candle
+func (s *Service) applyPriceSampleLocked(st *symState, price, vol int64, ts time.Time) []events.Candle {
+	if st.candles == nil {
+		st.candles = map[string]*events.Candle{}
 	}
-	st.candle.High = max(st.candle.High, price)
-	st.candle.Low = min(st.candle.Low, price)
-	st.candle.Close = price
-	st.candle.Volume += vol
-	return *st.candle
+	utc := ts.UTC()
+	out := make([]events.Candle, 0, len(candleTimeframes))
+	for _, tf := range candleTimeframes {
+		bucket := utc.Truncate(tf.dur).Unix()
+		cur := st.candles[tf.interval]
+		if cur == nil || cur.BucketStart != bucket {
+			cur = &events.Candle{
+				Symbol:      st.symbol,
+				Interval:    tf.interval,
+				BucketStart: bucket,
+				Open:        price,
+				High:        price,
+				Low:         price,
+				Close:       price,
+				Volume:      vol,
+			}
+			st.candles[tf.interval] = cur
+		} else {
+			cur.High = max(cur.High, price)
+			cur.Low = min(cur.Low, price)
+			cur.Close = price
+			cur.Volume += vol
+		}
+		out = append(out, *cur)
+	}
+	return out
 }
 
 func (s *Service) upsertCandle(ctx context.Context, c events.Candle) error {
