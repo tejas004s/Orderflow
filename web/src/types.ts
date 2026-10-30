@@ -43,13 +43,16 @@ export interface Candle {
   volume: number;
 }
 
+export type OrderType = 'LIMIT' | 'MARKET' | 'STOP' | 'STOP_LIMIT';
+
 export interface Order {
   id: string;
   user_id: string;
   symbol: string;
   side: 'BUY' | 'SELL';
-  type: 'LIMIT' | 'MARKET';
+  type: OrderType;
   price?: number;
+  stop_price?: number;
   protection_price?: number;
   qty: number;
   filled_qty: number;

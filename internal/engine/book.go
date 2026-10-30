@@ -220,21 +220,86 @@ func (x *heapIndex) ascend(fn func(*level) bool) {
 
 // ---- Book -----------------------------------------------------------------
 
+// stopOrder is an un-triggered stop or stop-limit order waiting in the trigger book.
+type stopOrder struct {
+	id        uuid.UUID
+	user      uuid.UUID
+	side      Side
+	typ       OrderType // Stop or StopLimit
+	price     int64     // limit price (StopLimit), or protection limit (Stop)
+	stopPrice int64     // trigger price
+	qty       int64
+	ts        int64
+
+	lvl        *stopLevel
+	prev, next *stopOrder
+}
+
+type stopLevel struct {
+	stopPrice int64
+	count     int
+	head      *stopOrder
+	tail      *stopOrder
+}
+
+func (l *stopLevel) push(o *stopOrder) {
+	o.lvl = l
+	o.prev = l.tail
+	o.next = nil
+	if l.tail != nil {
+		l.tail.next = o
+	} else {
+		l.head = o
+	}
+	l.tail = o
+	l.count++
+}
+
+func (l *stopLevel) unlink(o *stopOrder) {
+	if o.prev != nil {
+		o.prev.next = o.next
+	} else {
+		l.head = o.next
+	}
+	if o.next != nil {
+		o.next.prev = o.prev
+	} else {
+		l.tail = o.prev
+	}
+	l.count--
+	o.prev, o.next, o.lvl = nil, nil, nil
+}
+
 // Book is the order book for a single symbol.
 type Book struct {
-	Symbol string
-	bids   levelIndex
-	asks   levelIndex
-	orders map[uuid.UUID]*order
-	seq    uint64
+	Symbol         string
+	bids           levelIndex
+	asks           levelIndex
+	orders         map[uuid.UUID]*order
+	seq            uint64
+	lastTradePrice int64
+
+	// Trigger book: stop orders indexed by trigger price.
+	// buyStops: lowest stopPrice first (triggers when lastTradePrice >= stopPrice).
+	// sellStops: highest stopPrice first (triggers when lastTradePrice <= stopPrice).
+	buyStops      *btree.BTreeG[*stopLevel]
+	buyStopsByPx  map[int64]*stopLevel
+	sellStops     *btree.BTreeG[*stopLevel]
+	sellStopsByPx map[int64]*stopLevel
+	stopOrders    map[uuid.UUID]*stopOrder
 }
 
 func newBook(symbol string, kind IndexKind) *Book {
 	return &Book{
-		Symbol: symbol,
-		bids:   newIndex(kind, Buy),
-		asks:   newIndex(kind, Sell),
-		orders: map[uuid.UUID]*order{},
+		Symbol:        symbol,
+		bids:          newIndex(kind, Buy),
+		asks:          newIndex(kind, Sell),
+		orders:        map[uuid.UUID]*order{},
+		buyStops:      btree.NewBTreeGOptions(func(a, b *stopLevel) bool { return a.stopPrice < b.stopPrice }, btree.Options{NoLocks: true, Degree: 64}),
+		buyStopsByPx:  map[int64]*stopLevel{},
+		sellStops:     btree.NewBTreeGOptions(func(a, b *stopLevel) bool { return a.stopPrice > b.stopPrice }, btree.Options{NoLocks: true, Degree: 64}),
+		sellStopsByPx: map[int64]*stopLevel{},
+		stopOrders:    map[uuid.UUID]*stopOrder{},
 	}
 }
 
@@ -248,8 +313,17 @@ func (b *Book) side(s Side) levelIndex {
 // Seq returns the last sequence number emitted for this symbol.
 func (b *Book) Seq() uint64 { return b.seq }
 
-// OrderCount returns the number of resting orders.
+// OrderCount returns the number of resting active orders.
 func (b *Book) OrderCount() int { return len(b.orders) }
+
+// StopOrderCount returns the number of resting stop orders waiting in the trigger book.
+func (b *Book) StopOrderCount() int { return len(b.stopOrders) }
+
+// LastTradePrice returns the last executed trade price, or 0 if none yet.
+func (b *Book) LastTradePrice() int64 { return b.lastTradePrice }
+
+// SetLastTradePrice sets the reference/last trade price.
+func (b *Book) SetLastTradePrice(px int64) { b.lastTradePrice = px }
 
 // BestBid returns the best bid price, or 0 and false if there are no bids.
 func (b *Book) BestBid() (int64, bool) {
@@ -308,4 +382,78 @@ func (b *Book) unlink(o *order) {
 func (b *Book) shrink(o *order, newQty int64) {
 	o.lvl.total -= o.qty - newQty
 	o.qty = newQty
+}
+
+func (b *Book) restStop(o *stopOrder) {
+	var tree *btree.BTreeG[*stopLevel]
+	var byPx map[int64]*stopLevel
+	if o.side == Buy {
+		tree, byPx = b.buyStops, b.buyStopsByPx
+	} else {
+		tree, byPx = b.sellStops, b.sellStopsByPx
+	}
+	l := byPx[o.stopPrice]
+	if l == nil {
+		l = &stopLevel{stopPrice: o.stopPrice}
+		tree.Set(l)
+		byPx[o.stopPrice] = l
+	}
+	l.push(o)
+	b.stopOrders[o.id] = o
+}
+
+func (b *Book) unlinkStop(o *stopOrder) {
+	l := o.lvl
+	l.unlink(o)
+	delete(b.stopOrders, o.id)
+	if l.count == 0 {
+		if o.side == Buy {
+			b.buyStops.Delete(l)
+			delete(b.buyStopsByPx, l.stopPrice)
+		} else {
+			b.sellStops.Delete(l)
+			delete(b.sellStopsByPx, l.stopPrice)
+		}
+	}
+}
+
+// electTriggeredStops drains and returns all stop orders whose stop_price is
+// crossed by b.lastTradePrice:
+//   - Buy stops with stopPrice <= lastTradePrice
+//   - Sell stops with stopPrice >= lastTradePrice
+func (b *Book) electTriggeredStops() []*stopOrder {
+	if b.lastTradePrice <= 0 {
+		return nil
+	}
+	var triggered []*stopOrder
+
+	// Buy stops: Min() has the lowest stop price (first to trigger on price increase).
+	for {
+		lvl, ok := b.buyStops.Min()
+		if !ok || lvl.stopPrice > b.lastTradePrice {
+			break
+		}
+		for o := lvl.head; o != nil; o = o.next {
+			delete(b.stopOrders, o.id)
+			triggered = append(triggered, o)
+		}
+		b.buyStops.Delete(lvl)
+		delete(b.buyStopsByPx, lvl.stopPrice)
+	}
+
+	// Sell stops: Min() has the highest stop price (first to trigger on price decrease).
+	for {
+		lvl, ok := b.sellStops.Min()
+		if !ok || lvl.stopPrice < b.lastTradePrice {
+			break
+		}
+		for o := lvl.head; o != nil; o = o.next {
+			delete(b.stopOrders, o.id)
+			triggered = append(triggered, o)
+		}
+		b.sellStops.Delete(lvl)
+		delete(b.sellStopsByPx, lvl.stopPrice)
+	}
+
+	return triggered
 }

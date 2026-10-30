@@ -37,10 +37,11 @@ type PlaceRequest struct {
 	UserID         uuid.UUID `json:"user_id"`
 	IdempotencyKey string    `json:"idempotency_key"`
 	Symbol         string    `json:"symbol"`
-	Side           string    `json:"side"`  // "BUY" | "SELL"
-	Type           string    `json:"type"`  // "LIMIT" | "MARKET"
-	Price          int64     `json:"price"` // minor units; 0 for MARKET
-	Qty            int64     `json:"qty"`   // shares
+	Side           string    `json:"side"`                 // "BUY" | "SELL"
+	Type           string    `json:"type"`                 // "LIMIT" | "MARKET" | "STOP" | "STOP_LIMIT"
+	Price          int64     `json:"price"`                // minor units; 0 for MARKET and STOP
+	StopPrice      int64     `json:"stop_price,omitempty"` // minor units; required for STOP and STOP_LIMIT
+	Qty            int64     `json:"qty"`                  // shares
 }
 
 // Order is the persisted representation of a user's order.
@@ -51,6 +52,7 @@ type Order struct {
 	Side            string    `json:"side"`
 	Type            string    `json:"type"`
 	Price           *int64    `json:"price,omitempty"`
+	StopPrice       *int64    `json:"stop_price,omitempty"`
 	ProtectionPrice *int64    `json:"protection_price,omitempty"`
 	Qty             int64     `json:"qty"`
 	FilledQty       int64     `json:"filled_qty"`
@@ -84,8 +86,8 @@ func NewService(pool *pgxpool.Pool, relay *outbox.Relay) *Service {
 }
 
 func requestHash(req PlaceRequest) []byte {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%d|%d",
-		req.Symbol, req.Side, req.Type, req.Price, req.Qty)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%d|%d|%d",
+		req.Symbol, req.Side, req.Type, req.Price, req.StopPrice, req.Qty)))
 	return sum[:]
 }
 
@@ -120,17 +122,23 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceRequest) (Order, bool
 	if req.Side != "BUY" && req.Side != "SELL" {
 		return Order{}, false, fmt.Errorf("%w: side must be BUY or SELL", ErrValidation)
 	}
-	if req.Type != "LIMIT" && req.Type != "MARKET" {
-		return Order{}, false, fmt.Errorf("%w: type must be LIMIT or MARKET", ErrValidation)
+	if req.Type != "LIMIT" && req.Type != "MARKET" && req.Type != "STOP" && req.Type != "STOP_LIMIT" {
+		return Order{}, false, fmt.Errorf("%w: type must be LIMIT, MARKET, STOP, or STOP_LIMIT", ErrValidation)
 	}
 	if req.Qty <= 0 {
 		return Order{}, false, fmt.Errorf("%w: qty must be positive", ErrValidation)
 	}
-	if req.Type == "LIMIT" && req.Price <= 0 {
-		return Order{}, false, fmt.Errorf("%w: limit order requires positive price", ErrValidation)
+	if (req.Type == "LIMIT" || req.Type == "STOP_LIMIT") && req.Price <= 0 {
+		return Order{}, false, fmt.Errorf("%w: limit and stop-limit orders require positive price", ErrValidation)
 	}
-	if req.Type == "MARKET" && req.Price != 0 {
-		return Order{}, false, fmt.Errorf("%w: market order must not specify price", ErrValidation)
+	if (req.Type == "MARKET" || req.Type == "STOP") && req.Price != 0 {
+		return Order{}, false, fmt.Errorf("%w: market and stop orders must not specify price", ErrValidation)
+	}
+	if (req.Type == "STOP" || req.Type == "STOP_LIMIT") && req.StopPrice <= 0 {
+		return Order{}, false, fmt.Errorf("%w: stop and stop-limit orders require positive stop_price", ErrValidation)
+	}
+	if (req.Type == "LIMIT" || req.Type == "MARKET") && req.StopPrice != 0 {
+		return Order{}, false, fmt.Errorf("%w: limit and market orders must not specify stop_price", ErrValidation)
 	}
 
 	reqHash := requestHash(req)
@@ -185,28 +193,43 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceRequest) (Order, bool
 	if req.Qty%inst.LotSize != 0 {
 		return Order{}, false, fmt.Errorf("%w: qty %d is not a multiple of lot_size %d", ErrValidation, req.Qty, inst.LotSize)
 	}
-	if req.Type == "LIMIT" && req.Price%inst.TickSize != 0 {
+	if (req.Type == "LIMIT" || req.Type == "STOP_LIMIT") && req.Price%inst.TickSize != 0 {
 		return Order{}, false, fmt.Errorf("%w: price %d is not a multiple of tick_size %d", ErrValidation, req.Price, inst.TickSize)
+	}
+	if (req.Type == "STOP" || req.Type == "STOP_LIMIT") && req.StopPrice%inst.TickSize != 0 {
+		return Order{}, false, fmt.Errorf("%w: stop_price %d is not a multiple of tick_size %d", ErrValidation, req.StopPrice, inst.TickSize)
 	}
 
 	// 3. Compute reservation and lock account or position row (SDD section 7.3).
 	var (
 		limitPrice      *int64
+		stopPrice       *int64
 		protectionPrice *int64
 		cmdPrice        int64
 		reservedAmount  int64
 	)
-	if req.Type == "LIMIT" {
+	if req.Type == "LIMIT" || req.Type == "STOP_LIMIT" {
 		px := req.Price
 		limitPrice = &px
 		cmdPrice = px
-	} else if req.Side == "BUY" {
+	}
+	if req.Type == "STOP" || req.Type == "STOP_LIMIT" {
+		sp := req.StopPrice
+		stopPrice = &sp
+	}
+	if req.Type == "MARKET" && req.Side == "BUY" {
 		// Use latest executed trade price if available, otherwise instrument ref_price.
 		refPx := inst.RefPrice
 		_ = tx.QueryRow(ctx, `
 			SELECT price FROM trades WHERE symbol = $1 ORDER BY executed_at DESC LIMIT 1
 		`, req.Symbol).Scan(&refPx)
 		band := ComputeProtectionPrice(refPx, inst.TickSize)
+		protectionPrice = &band
+		cmdPrice = band
+	} else if req.Type == "STOP" && req.Side == "BUY" {
+		// When a BUY STOP triggers at StopPrice, it executes as a market buy.
+		// Reserve up to the 5% protection band above StopPrice.
+		band := ComputeProtectionPrice(req.StopPrice, inst.TickSize)
 		protectionPrice = &band
 		cmdPrice = band
 	}
@@ -263,14 +286,14 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceRequest) (Order, bool
 	var ord Order
 	err = tx.QueryRow(ctx, `
 		INSERT INTO orders (
-			id, user_id, symbol, side, type, price, protection_price,
+			id, user_id, symbol, side, type, price, stop_price, protection_price,
 			qty, filled_qty, reserved_amount, status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, 'NEW', $10, $10)
-		RETURNING id, user_id, symbol, side, type, price, protection_price,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, 'NEW', $11, $11)
+		RETURNING id, user_id, symbol, side, type, price, stop_price, protection_price,
 		          qty, filled_qty, reserved_amount, status, reject_reason, created_at, updated_at
-	`, orderID, req.UserID, req.Symbol, req.Side, req.Type, limitPrice, protectionPrice,
+	`, orderID, req.UserID, req.Symbol, req.Side, req.Type, limitPrice, stopPrice, protectionPrice,
 		req.Qty, reservedAmount, now).Scan(
-		&ord.ID, &ord.UserID, &ord.Symbol, &ord.Side, &ord.Type, &ord.Price, &ord.ProtectionPrice,
+		&ord.ID, &ord.UserID, &ord.Symbol, &ord.Side, &ord.Type, &ord.Price, &ord.StopPrice, &ord.ProtectionPrice,
 		&ord.Qty, &ord.FilledQty, &ord.ReservedAmount, &ord.Status, &ord.RejectReason,
 		&ord.CreatedAt, &ord.UpdatedAt,
 	)
@@ -296,6 +319,7 @@ func (s *Service) PlaceOrder(ctx context.Context, req PlaceRequest) (Order, bool
 		Side:      req.Side,
 		OrderType: req.Type,
 		Price:     cmdPrice,
+		StopPrice: req.StopPrice,
 		Qty:       req.Qty,
 		Timestamp: now.UnixNano(),
 	}
@@ -405,7 +429,7 @@ func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, status, symb
 		limit = 50
 	}
 	rows, err := s.Pool.Query(ctx, `
-		SELECT id, user_id, symbol, side, type, price, protection_price,
+		SELECT id, user_id, symbol, side, type, price, stop_price, protection_price,
 		       qty, filled_qty, reserved_amount, status, reject_reason, created_at, updated_at
 		FROM orders
 		WHERE user_id = $1
@@ -423,7 +447,7 @@ func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, status, symb
 	for rows.Next() {
 		var o Order
 		if err := rows.Scan(
-			&o.ID, &o.UserID, &o.Symbol, &o.Side, &o.Type, &o.Price, &o.ProtectionPrice,
+			&o.ID, &o.UserID, &o.Symbol, &o.Side, &o.Type, &o.Price, &o.StopPrice, &o.ProtectionPrice,
 			&o.Qty, &o.FilledQty, &o.ReservedAmount, &o.Status, &o.RejectReason,
 			&o.CreatedAt, &o.UpdatedAt,
 		); err != nil {
@@ -436,7 +460,7 @@ func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID, status, symb
 
 func getOrderTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Order, error) {
 	return scanOrder(tx.QueryRow(ctx, `
-		SELECT id, user_id, symbol, side, type, price, protection_price,
+		SELECT id, user_id, symbol, side, type, price, stop_price, protection_price,
 		       qty, filled_qty, reserved_amount, status, reject_reason, created_at, updated_at
 		FROM orders WHERE id = $1
 	`, id))
@@ -444,7 +468,7 @@ func getOrderTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Order, error) {
 
 func getOrderForUpdateTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Order, error) {
 	return scanOrder(tx.QueryRow(ctx, `
-		SELECT id, user_id, symbol, side, type, price, protection_price,
+		SELECT id, user_id, symbol, side, type, price, stop_price, protection_price,
 		       qty, filled_qty, reserved_amount, status, reject_reason, created_at, updated_at
 		FROM orders WHERE id = $1 FOR UPDATE
 	`, id))
@@ -453,7 +477,7 @@ func getOrderForUpdateTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Order, e
 func scanOrder(row pgx.Row) (Order, error) {
 	var o Order
 	err := row.Scan(
-		&o.ID, &o.UserID, &o.Symbol, &o.Side, &o.Type, &o.Price, &o.ProtectionPrice,
+		&o.ID, &o.UserID, &o.Symbol, &o.Side, &o.Type, &o.Price, &o.StopPrice, &o.ProtectionPrice,
 		&o.Qty, &o.FilledQty, &o.ReservedAmount, &o.Status, &o.RejectReason,
 		&o.CreatedAt, &o.UpdatedAt,
 	)

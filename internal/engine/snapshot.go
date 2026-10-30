@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
+	"github.com/tidwall/btree"
 )
 
 const snapshotVersion = 1
@@ -27,9 +28,27 @@ type seenSnap struct {
 type bookSnap struct {
 	Symbol string `json:"symbol"`
 	Seq    uint64 `json:"seq"`
+	// LastPx is the last trade price, which decides when stops trigger. It is
+	// part of the state because a restored engine must trigger exactly the
+	// stops an uninterrupted one would.
+	LastPx int64 `json:"last_px,omitempty"`
 	// Orders in priority order: bids best->worst (FIFO within a level),
 	// then asks best->worst. Re-inserting in this order restores priority.
 	Orders []orderSnap `json:"orders"`
+	// Stops is the trigger book: buy stops by ascending trigger price, then
+	// sell stops by descending trigger price, FIFO within a price.
+	Stops []stopSnap `json:"stops,omitempty"`
+}
+
+type stopSnap struct {
+	ID    uuid.UUID `json:"id"`
+	User  uuid.UUID `json:"user"`
+	Side  Side      `json:"side"`
+	Type  OrderType `json:"type"`
+	Price int64     `json:"px"`
+	Stop  int64     `json:"stop"`
+	Qty   int64     `json:"qty"`
+	TS    int64     `json:"ts"`
 }
 
 type orderSnap struct {
@@ -55,11 +74,19 @@ func (e *Engine) Snapshot() ([]byte, error) {
 	sort.Strings(syms)
 	for _, sym := range syms {
 		b := e.books[sym]
-		bs := bookSnap{Symbol: sym, Seq: b.seq, Orders: make([]orderSnap, 0, len(b.orders))}
+		bs := bookSnap{Symbol: sym, Seq: b.seq, LastPx: b.lastTradePrice, Orders: make([]orderSnap, 0, len(b.orders))}
 		for _, idx := range []levelIndex{b.bids, b.asks} {
 			idx.ascend(func(l *level) bool {
 				for o := l.head; o != nil; o = o.next {
 					bs.Orders = append(bs.Orders, orderSnap{o.id, o.user, o.side, o.price, o.qty, o.filled, o.ts})
+				}
+				return true
+			})
+		}
+		for _, tree := range []*btree.BTreeG[*stopLevel]{b.buyStops, b.sellStops} {
+			tree.Scan(func(l *stopLevel) bool {
+				for o := l.head; o != nil; o = o.next {
+					bs.Stops = append(bs.Stops, stopSnap{o.id, o.user, o.side, o.typ, o.price, o.stopPrice, o.qty, o.ts})
 				}
 				return true
 			})
@@ -87,9 +114,14 @@ func Restore(data []byte, opts ...Option) (*Engine, error) {
 	for _, bs := range s.Books {
 		b := e.book(bs.Symbol)
 		b.seq = bs.Seq
+		b.lastTradePrice = bs.LastPx
 		for _, os := range bs.Orders {
 			b.rest(&order{id: os.ID, user: os.User, side: os.Side, price: os.Price,
 				qty: os.Qty, filled: os.Filled, ts: os.TS})
+		}
+		for _, ss := range bs.Stops {
+			b.restStop(&stopOrder{id: ss.ID, user: ss.User, side: ss.Side, typ: ss.Type,
+				price: ss.Price, stopPrice: ss.Stop, qty: ss.Qty, ts: ss.TS})
 		}
 	}
 	return e, e.CheckInvariants()
@@ -145,6 +177,59 @@ func (e *Engine) CheckInvariants() error {
 		if count != len(b.orders) {
 			errs = append(errs, fmt.Errorf("%s: %d orders in levels, %d indexed", sym, count, len(b.orders)))
 		}
+		errs = append(errs, b.checkStopInvariants()...)
 	}
 	return errors.Join(errs...)
+}
+
+// checkStopInvariants verifies the trigger book: every held stop is indexed,
+// sits at the right price level and side, and has NOT already been crossed by
+// the last trade price (such a stop would have been triggered).
+func (b *Book) checkStopInvariants() []error {
+	var errs []error
+	sym := b.Symbol
+	count := 0
+	for _, side := range []Side{Buy, Sell} {
+		tree, byPx := b.buyStops, b.buyStopsByPx
+		if side == Sell {
+			tree, byPx = b.sellStops, b.sellStopsByPx
+		}
+		levels := 0
+		tree.Scan(func(l *stopLevel) bool {
+			levels++
+			if byPx[l.stopPrice] != l {
+				errs = append(errs, fmt.Errorf("%s: stop level %d not indexed", sym, l.stopPrice))
+			}
+			n := 0
+			for o := l.head; o != nil; o = o.next {
+				n++
+				if o.lvl != l || o.side != side || o.stopPrice != l.stopPrice {
+					errs = append(errs, fmt.Errorf("%s: stop %s misplaced", sym, o.id))
+				}
+				if b.stopOrders[o.id] != o {
+					errs = append(errs, fmt.Errorf("%s: stop %s not indexed", sym, o.id))
+				}
+				if o.typ != Stop && o.typ != StopLimit {
+					errs = append(errs, fmt.Errorf("%s: stop %s has type %v", sym, o.id, o.typ))
+				}
+				if last := b.lastTradePrice; last > 0 &&
+					((side == Buy && last >= o.stopPrice) || (side == Sell && last <= o.stopPrice)) {
+					errs = append(errs, fmt.Errorf("%s: stop %s (%v @ %d) should have triggered at last price %d",
+						sym, o.id, side, o.stopPrice, last))
+				}
+			}
+			if n == 0 || n != l.count {
+				errs = append(errs, fmt.Errorf("%s: stop level %d count mismatch", sym, l.stopPrice))
+			}
+			count += n
+			return true
+		})
+		if levels != len(byPx) {
+			errs = append(errs, fmt.Errorf("%s: stop level index size mismatch", sym))
+		}
+	}
+	if count != len(b.stopOrders) {
+		errs = append(errs, fmt.Errorf("%s: %d stops in levels, %d indexed", sym, count, len(b.stopOrders)))
+	}
+	return errs
 }

@@ -134,7 +134,13 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({
                       </td>
                       <td className="mono">{o.type}</td>
                       <td className="mono">
-                        {o.price ? `$${formatPrice(o.price)}` : 'MKT'}
+                        {o.type === 'STOP' && o.stop_price
+                          ? `Stop $${formatPrice(o.stop_price)}`
+                          : o.type === 'STOP_LIMIT' && o.stop_price && o.price
+                            ? `$${formatPrice(o.price)} (Stop $${formatPrice(o.stop_price)})`
+                            : o.price
+                              ? `$${formatPrice(o.price)}`
+                              : 'MKT'}
                       </td>
                       <td className="mono">
                         {o.filled_qty} / {o.qty}

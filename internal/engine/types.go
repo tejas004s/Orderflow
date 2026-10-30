@@ -41,12 +41,20 @@ func (s Side) Opposite() Side {
 	return Buy
 }
 
-// OrderType is LIMIT or MARKET.
+// OrderType is LIMIT, MARKET, STOP, or STOP_LIMIT.
+//
+// STOP and STOP_LIMIT orders are held in a trigger book until the last trade
+// price crosses Command.StopPrice: a BUY stop triggers when the last trade
+// price is >= StopPrice, a SELL stop when it is <= StopPrice. On triggering,
+// a STOP becomes a MARKET order (Command.Price, if non-zero, is its
+// protection price) and a STOP_LIMIT becomes a LIMIT order at Command.Price.
 type OrderType uint8
 
 const (
-	Limit  OrderType = 1
-	Market OrderType = 2
+	Limit     OrderType = 1
+	Market    OrderType = 2
+	Stop      OrderType = 3
+	StopLimit OrderType = 4
 )
 
 func (t OrderType) String() string {
@@ -55,6 +63,10 @@ func (t OrderType) String() string {
 		return "LIMIT"
 	case Market:
 		return "MARKET"
+	case Stop:
+		return "STOP"
+	case StopLimit:
+		return "STOP_LIMIT"
 	}
 	return "UNKNOWN"
 }
@@ -88,11 +100,14 @@ type Command struct {
 	UserID  uuid.UUID
 	Side    Side
 	Type    OrderType
-	// Price is the limit price for LIMIT orders. For MARKET orders it is
-	// the optional protection price: the engine never fills a market buy
-	// above it or a market sell below it (0 = unbounded).
+	// Price is the limit price for LIMIT and STOP_LIMIT orders. For MARKET
+	// and STOP orders it is the optional protection price: the engine never
+	// fills a market buy above it or a market sell below it (0 = unbounded).
 	Price int64
-	Qty   int64
+	// StopPrice is the trigger price of STOP and STOP_LIMIT orders; it must be
+	// zero for every other type.
+	StopPrice int64
+	Qty       int64
 	// Timestamp in unix nanoseconds, assigned upstream (order-service).
 	Timestamp int64
 }
@@ -132,12 +147,13 @@ const (
 	ReasonPriceBand      Reason = 8 // market order: remainder beyond protection price
 	ReasonQtyTooLow      Reason = 9 // replace: new total qty <= already filled qty
 	ReasonNoChange       Reason = 10
+	ReasonStopHit        Reason = 11
 )
 
 func (r Reason) String() string {
 	return [...]string{"", "USER_CANCEL", "IOC_REMAINDER", "NO_LIQUIDITY", "SELF_TRADE",
 		"INVALID", "DUPLICATE_ORDER", "UNKNOWN_ORDER", "PRICE_BAND",
-		"QTY_TOO_LOW", "NO_CHANGE"}[r]
+		"QTY_TOO_LOW", "NO_CHANGE", "STOP_WOULD_TRIGGER"}[r]
 }
 
 // EventKind distinguishes event payloads.
@@ -178,12 +194,19 @@ type Event struct {
 	Side      Side
 	Type      OrderType
 	Price     int64
+	StopPrice int64
 	Qty       int64
 	FilledQty int64
 	LeavesQty int64 // qty still open (on the book if Resting)
 	Status    OrderStatus
 	Reason    Reason
 	// Resting is true when LeavesQty is on the book after this event.
+	//
+	// An un-triggered stop order is NOT on the book: its acceptance report has
+	// Type Stop/StopLimit, Status Accepted, LeavesQty = Qty and Resting false.
+	// Consumers that project the visible book must therefore key on Resting,
+	// never on Status alone. Once the stop triggers, its next report carries
+	// the normal outcome (fills, resting remainder, rejection...).
 	Resting bool
 
 	// EvReplaced: the order's state before the replace. PrevFilled is the

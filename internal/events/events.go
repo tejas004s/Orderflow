@@ -87,6 +87,7 @@ type OrderCommand struct {
 	Side      string    `json:"side,omitempty"`       // "BUY" | "SELL"
 	OrderType string    `json:"order_type,omitempty"` // "LIMIT" | "MARKET"
 	Price     int64     `json:"price,omitempty"`
+	StopPrice int64     `json:"stop_price,omitempty"`
 	Qty       int64     `json:"qty,omitempty"`
 	Timestamp int64     `json:"timestamp"`
 }
@@ -99,6 +100,7 @@ func (c OrderCommand) ToEngine() (engine.Command, error) {
 		OrderID:   c.OrderID,
 		UserID:    c.UserID,
 		Price:     c.Price,
+		StopPrice: c.StopPrice,
 		Qty:       c.Qty,
 		Timestamp: c.Timestamp,
 	}
@@ -127,6 +129,10 @@ func (c OrderCommand) ToEngine() (engine.Command, error) {
 		out.Type = engine.Limit
 	case "MARKET":
 		out.Type = engine.Market
+	case "STOP":
+		out.Type = engine.Stop
+	case "STOP_LIMIT":
+		out.Type = engine.StopLimit
 	default:
 		return out, fmt.Errorf("unknown order_type %q", c.OrderType)
 	}
@@ -151,6 +157,7 @@ func FromEngineCommand(c engine.Command) OrderCommand {
 		Side:      c.Side.String(),
 		OrderType: c.Type.String(),
 		Price:     c.Price,
+		StopPrice: c.StopPrice,
 		Qty:       c.Qty,
 		Timestamp: c.Timestamp,
 	}
@@ -175,6 +182,7 @@ type OrderEvent struct {
 	Side       string    `json:"side,omitempty"`
 	OrderType  string    `json:"order_type,omitempty"`
 	Price      int64     `json:"price,omitempty"`
+	StopPrice  int64     `json:"stop_price,omitempty"`
 	Qty        int64     `json:"qty,omitempty"`
 	FilledQty  int64     `json:"filled_qty"`
 	LeavesQty  int64     `json:"leaves_qty"`
@@ -252,6 +260,7 @@ func FromEngineEvent(ev engine.Event) (*OrderEvent, *TradeExecuted) {
 		Side:       ev.Side.String(),
 		OrderType:  ev.Type.String(),
 		Price:      ev.Price,
+		StopPrice:  ev.StopPrice,
 		Qty:        ev.Qty,
 		FilledQty:  ev.FilledQty,
 		LeavesQty:  ev.LeavesQty,

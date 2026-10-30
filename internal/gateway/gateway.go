@@ -429,7 +429,7 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.Pool.Query(r.Context(), `
-		SELECT id, user_id, symbol, side, type, price, protection_price,
+		SELECT id, user_id, symbol, side, type, price, stop_price, protection_price,
 		       qty, filled_qty, reserved_amount, status, reject_reason, created_at, updated_at
 		FROM orders
 		WHERE user_id = $1
@@ -449,7 +449,7 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	var nextCursor string
 	for rows.Next() {
 		var o order.Order
-		if err := rows.Scan(&o.ID, &o.UserID, &o.Symbol, &o.Side, &o.Type, &o.Price, &o.ProtectionPrice,
+		if err := rows.Scan(&o.ID, &o.UserID, &o.Symbol, &o.Side, &o.Type, &o.Price, &o.StopPrice, &o.ProtectionPrice,
 			&o.Qty, &o.FilledQty, &o.ReservedAmount, &o.Status, &o.RejectReason, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			httpx.WriteProblem(w, r, http.StatusInternalServerError, "Database Error", err.Error())
 			return

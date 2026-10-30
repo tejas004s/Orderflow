@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
-import { formatPrice, formatUSD, type Instrument } from '../types';
+import { formatPrice, formatUSD, type Instrument, type OrderType } from '../types';
 
 interface OrderTicketProps {
   instrument: Instrument;
@@ -18,32 +18,42 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
   onOrderPlaced,
 }) => {
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
-  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT');
+  const [orderType, setOrderType] = useState<OrderType>('LIMIT');
   const [priceStr, setPriceStr] = useState<string>(formatPrice(instrument.last_price || instrument.ref_price));
+  const [stopPriceStr, setStopPriceStr] = useState<string>(formatPrice(instrument.last_price || instrument.ref_price));
   const [qtyStr, setQtyStr] = useState<string>('10');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
-    setPriceStr(formatPrice(instrument.last_price || instrument.ref_price));
+    const px = formatPrice(instrument.last_price || instrument.ref_price);
+    setPriceStr(px);
+    setStopPriceStr(px);
   }, [instrument.symbol]);
 
   useEffect(() => {
     if (draftPriceCents && draftPriceCents > 0) {
-      setOrderType('LIMIT');
+      if (orderType === 'MARKET' || orderType === 'STOP') {
+        setOrderType('LIMIT');
+      }
       setPriceStr(formatPrice(draftPriceCents));
     }
   }, [draftPriceCents]);
 
   const priceCents = Math.round(parseFloat(priceStr || '0') * 100);
+  const stopPriceCents = Math.round(parseFloat(stopPriceStr || '0') * 100);
   const qty = parseInt(qtyStr || '0', 10);
   const refPx = instrument.last_price || instrument.ref_price;
   const estPx =
-    orderType === 'LIMIT'
+    orderType === 'LIMIT' || orderType === 'STOP_LIMIT'
       ? priceCents
-      : side === 'BUY'
-        ? Math.ceil((refPx * 105) / 100)
-        : refPx;
+      : orderType === 'STOP'
+        ? side === 'BUY'
+          ? Math.ceil((stopPriceCents * 105) / 100)
+          : stopPriceCents
+        : side === 'BUY'
+          ? Math.ceil((refPx * 105) / 100)
+          : refPx;
   const estNotional = estPx > 0 && qty > 0 ? estPx * qty : 0;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -53,8 +63,12 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
       setFeedback({ kind: 'err', text: 'Quantity must be positive' });
       return;
     }
-    if (orderType === 'LIMIT' && priceCents <= 0) {
+    if ((orderType === 'LIMIT' || orderType === 'STOP_LIMIT') && priceCents <= 0) {
       setFeedback({ kind: 'err', text: 'Limit price must be positive' });
+      return;
+    }
+    if ((orderType === 'STOP' || orderType === 'STOP_LIMIT') && stopPriceCents <= 0) {
+      setFeedback({ kind: 'err', text: 'Stop price must be positive' });
       return;
     }
     setSubmitting(true);
@@ -63,7 +77,8 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
         symbol: instrument.symbol,
         side,
         type: orderType,
-        price: orderType === 'LIMIT' ? priceCents : undefined,
+        price: orderType === 'LIMIT' || orderType === 'STOP_LIMIT' ? priceCents : undefined,
+        stop_price: orderType === 'STOP' || orderType === 'STOP_LIMIT' ? stopPriceCents : undefined,
         qty,
       });
       setFeedback({
@@ -138,10 +153,38 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
         >
           Market
         </button>
+        <button
+          type="button"
+          className={`tab-btn ${orderType === 'STOP' ? 'active' : ''}`}
+          onClick={() => setOrderType('STOP')}
+        >
+          Stop
+        </button>
+        <button
+          type="button"
+          className={`tab-btn ${orderType === 'STOP_LIMIT' ? 'active' : ''}`}
+          onClick={() => setOrderType('STOP_LIMIT')}
+        >
+          Stop Limit
+        </button>
       </div>
 
       <form onSubmit={handleSubmit} className="ticket-form">
-        {orderType === 'LIMIT' ? (
+        {(orderType === 'STOP' || orderType === 'STOP_LIMIT') && (
+          <label className="field">
+            <span>Stop Price (USD)</span>
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              value={stopPriceStr}
+              onChange={(e) => setStopPriceStr(e.target.value)}
+              className="mono"
+            />
+          </label>
+        )}
+
+        {orderType === 'LIMIT' || orderType === 'STOP_LIMIT' ? (
           <label className="field">
             <span>Limit Price (USD)</span>
             <input
@@ -153,6 +196,10 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
               className="mono"
             />
           </label>
+        ) : orderType === 'STOP' ? (
+          <div className="market-band-note">
+            Stop {side}: triggers at ${stopPriceStr} and executes as Market (IOC).
+          </div>
         ) : (
           <div className="market-band-note">
             Market {side}: executes immediately (IOC) with 5% price protection band.
@@ -193,7 +240,13 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
           {submitting
             ? 'Submitting…'
             : `${side} ${qty > 0 ? qty : ''} ${instrument.symbol} @ ${
-                orderType === 'MARKET' ? 'MKT' : `$${priceStr}`
+                orderType === 'MARKET'
+                  ? 'MKT'
+                  : orderType === 'STOP'
+                    ? `Stop $${stopPriceStr}`
+                    : orderType === 'STOP_LIMIT'
+                      ? `$${priceStr} (Stop $${stopPriceStr})`
+                      : `$${priceStr}`
               }`}
         </button>
 

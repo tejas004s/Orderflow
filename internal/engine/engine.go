@@ -75,6 +75,13 @@ func (e *Engine) Process(cmd Command) []Event {
 	default:
 		e.emitOrder(nil, &cmd, StatusRejected, ReasonInvalid, 0, false)
 	}
+	// Trades update the book's last trade price; any stop order it crossed is
+	// elected only now, after the command's own matching is complete, so a
+	// command is never interleaved with the orders it triggers. The check is
+	// a map length lookup, so engines with no stop orders pay nothing.
+	if b := e.books[cmd.Symbol]; b != nil && len(b.stopOrders) > 0 {
+		e.triggerStops(b)
+	}
 	e.cmd = nil
 	return e.out
 }
@@ -86,11 +93,18 @@ func validPlace(c *Command) bool {
 	if c.Side != Buy && c.Side != Sell {
 		return false
 	}
+	if c.Type != Stop && c.Type != StopLimit && c.StopPrice != 0 {
+		return false // only stop orders carry a trigger price
+	}
 	switch c.Type {
 	case Limit:
 		return c.Price > 0
 	case Market:
 		return c.Price >= 0
+	case Stop:
+		return c.StopPrice > 0 && c.Price >= 0
+	case StopLimit:
+		return c.StopPrice > 0 && c.Price > 0
 	}
 	return false
 }
@@ -105,11 +119,83 @@ func (e *Engine) place(c *Command) {
 		return
 	}
 	b := e.book(c.Symbol)
-	if _, resting := b.orders[c.OrderID]; resting || !e.seen.add(c.OrderID, c.Timestamp) {
+	_, resting := b.orders[c.OrderID]
+	_, held := b.stopOrders[c.OrderID]
+	if resting || held || !e.seen.add(c.OrderID, c.Timestamp) {
 		e.emit(b, Event{Kind: EvDuplicate, OrderID: c.OrderID, UserID: c.UserID,
 			Side: c.Side, Type: c.Type, Price: c.Price, Qty: c.Qty, Reason: ReasonDuplicateOrder})
 		return
 	}
+	if c.Type == Stop || c.Type == StopLimit {
+		e.placeStop(b, c)
+		return
+	}
+	e.match(b, c, c.Type)
+}
+
+// placeStop parks a stop or stop-limit order in the trigger book.
+//
+// A stop whose trigger price has already been crossed by the last trade is
+// rejected rather than fired on the spot: a BUY stop at or below the market, or
+// a SELL stop at or above it, is almost always a typo, and executing it
+// instantly would turn that typo into a market order. Until the first trade of
+// a symbol there is no last trade price, so nothing can be crossed yet.
+func (e *Engine) placeStop(b *Book, c *Command) {
+	if last := b.lastTradePrice; last > 0 &&
+		((c.Side == Buy && last >= c.StopPrice) || (c.Side == Sell && last <= c.StopPrice)) {
+		e.emitOrder(b, c, StatusRejected, ReasonStopHit, 0, false)
+		return
+	}
+	b.restStop(&stopOrder{id: c.OrderID, user: c.UserID, side: c.Side, typ: c.Type,
+		price: c.Price, stopPrice: c.StopPrice, qty: c.Qty, ts: c.Timestamp})
+	e.emit(b, Event{
+		Kind: EvOrder, OrderID: c.OrderID, UserID: c.UserID, Side: c.Side, Type: c.Type,
+		Price: c.Price, StopPrice: c.StopPrice, Qty: c.Qty, LeavesQty: c.Qty,
+		Status: StatusAccepted, // held in the stop book: Resting stays false
+	})
+}
+
+// triggerStops elects every stop order crossed by the last trade price and
+// injects it into the active book, repeating until no stop is left to fire:
+// the orders it injects can trade and move the price, which can fire more.
+// Each pass removes at least one stop from the trigger book, so it terminates.
+func (e *Engine) triggerStops(b *Book) {
+	for {
+		fired := b.electTriggeredStops()
+		if len(fired) == 0 {
+			return
+		}
+		for _, s := range fired {
+			e.injectStop(b, s)
+		}
+	}
+}
+
+// injectStop turns a triggered stop into the order it was waiting to become (a
+// STOP becomes a MARKET order, a STOP_LIMIT a LIMIT order) and runs it through
+// the matching logic as an incoming order. It is stamped with the time of the
+// command that triggered it, so a limit remainder queues behind orders that
+// were already resting. Its reports keep the original STOP/STOP_LIMIT type.
+func (e *Engine) injectStop(b *Book, s *stopOrder) {
+	typ := Limit
+	if s.typ == Stop {
+		typ = Market
+	}
+	c := &Command{
+		ID: e.cmd.ID, Kind: CmdPlace, Symbol: b.Symbol, OrderID: s.id, UserID: s.user,
+		Side: s.side, Type: typ, Price: s.price, StopPrice: s.stopPrice, Qty: s.qty,
+		Timestamp: e.cmd.Timestamp,
+	}
+	e.match(b, c, s.typ)
+}
+
+// match runs an incoming order through the opposite side of the book and
+// emits its final execution report. c.Type decides how it trades (LIMIT or
+// MARKET); reportAs is the order type its reports carry, which differs from
+// c.Type only for a triggered stop.
+func (e *Engine) match(b *Book, c *Command, reportAs OrderType) {
+	rep := *c
+	rep.Type = reportAs
 
 	taker := &order{id: c.OrderID, user: c.UserID, side: c.Side, price: c.Price, qty: c.Qty, ts: c.Timestamp}
 	opp := b.side(c.Side.Opposite())
@@ -136,9 +222,9 @@ func (e *Engine) place(c *Command) {
 
 	switch {
 	case taker.leaves() == 0:
-		e.emitOrder(b, c, StatusFilled, ReasonNone, taker.filled, false)
+		e.emitOrder(b, &rep, StatusFilled, ReasonNone, taker.filled, false)
 	case stp:
-		e.emitOrder(b, c, StatusCancelled, ReasonSelfTrade, taker.filled, false)
+		e.emitOrder(b, &rep, StatusCancelled, ReasonSelfTrade, taker.filled, false)
 	case c.Type == Market:
 		reason := ReasonIOCRemainder
 		if bandHit {
@@ -148,9 +234,9 @@ func (e *Engine) place(c *Command) {
 			if !bandHit {
 				reason = ReasonNoLiquidity
 			}
-			e.emitOrder(b, c, StatusRejected, reason, 0, false)
+			e.emitOrder(b, &rep, StatusRejected, reason, 0, false)
 		} else {
-			e.emitOrder(b, c, StatusCancelled, reason, taker.filled, false)
+			e.emitOrder(b, &rep, StatusCancelled, reason, taker.filled, false)
 		}
 	default: // limit remainder rests (GTC)
 		b.rest(taker)
@@ -158,7 +244,7 @@ func (e *Engine) place(c *Command) {
 		if taker.filled > 0 {
 			st = StatusPartiallyFilled
 		}
-		e.emitOrder(b, c, st, ReasonNone, taker.filled, true)
+		e.emitOrder(b, &rep, st, ReasonNone, taker.filled, true)
 	}
 }
 
@@ -189,6 +275,7 @@ func (e *Engine) trade(b *Book, taker, maker *order, px, qty int64) {
 		t.BuyLimit = maker.price
 	}
 	e.emit(b, Event{Kind: EvTrade, Trade: t})
+	b.lastTradePrice = px // arms the stop trigger check run after the command
 
 	// Maker execution report.
 	ev := Event{
@@ -212,6 +299,16 @@ func (e *Engine) cancel(c *Command) {
 		return
 	}
 	b := e.book(c.Symbol)
+	if s, held := b.stopOrders[c.OrderID]; held && (c.UserID == uuid.Nil || s.user == c.UserID) {
+		// An un-triggered stop order: it never reached the book, so it has
+		// nothing to unlink there and nothing was ever filled.
+		b.unlinkStop(s)
+		e.emit(b, Event{
+			Kind: EvOrder, OrderID: s.id, UserID: s.user, Side: s.side, Type: s.typ, Price: s.price,
+			StopPrice: s.stopPrice, Qty: s.qty, LeavesQty: 0, Status: StatusCancelled, Reason: ReasonUserCancel,
+		})
+		return
+	}
 	o, ok := b.orders[c.OrderID]
 	if !ok || (c.UserID != uuid.Nil && o.user != c.UserID) {
 		e.emit(b, Event{Kind: EvCancelReject, OrderID: c.OrderID, UserID: c.UserID, Reason: ReasonUnknownOrder})
@@ -344,7 +441,7 @@ func (e *Engine) emitOrder(b *Book, c *Command, st OrderStatus, r Reason, filled
 	}
 	e.emit(b, Event{
 		Kind: EvOrder, OrderID: c.OrderID, UserID: c.UserID, Side: c.Side, Type: c.Type,
-		Price: c.Price, Qty: c.Qty, FilledQty: filled, LeavesQty: leaves, Status: st, Reason: r,
+		Price: c.Price, StopPrice: c.StopPrice, Qty: c.Qty, FilledQty: filled, LeavesQty: leaves, Status: st, Reason: r,
 		Resting: resting,
 	})
 }

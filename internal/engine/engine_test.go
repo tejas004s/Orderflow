@@ -1025,3 +1025,182 @@ func TestPropertyReplaceStream(t *testing.T) {
 		}
 	})
 }
+
+func TestStopOrderTriggeredByTrade(t *testing.T) {
+	h := newHarness(t)
+
+	// Seed an initial trade at 10000 ($100.00) to establish lastTradePrice = 10000.
+	h.limit(alice, "init-sell", Sell, 10000, 10)
+	h.limit(bob, "init-buy", Buy, 10000, 10)
+	if got := h.e.Book("AAPL").lastTradePrice; got != 10000 {
+		t.Fatalf("expected lastTradePrice 10000, got %d", got)
+	}
+
+	// Place resting ask liquidity at 10500 and 10600.
+	h.limit(alice, "ask-105", Sell, 10500, 5)
+	h.limit(alice, "ask-106", Sell, 10600, 15)
+
+	// Place a BUY STOP with StopPrice=10500 and protection Price=11000 for Qty=12.
+	evs := h.do(Command{
+		Kind:      CmdPlace,
+		OrderID:   uid("stop-buy-1"),
+		UserID:    carol,
+		Side:      Buy,
+		Type:      Stop,
+		Price:     11000,
+		StopPrice: 10500,
+		Qty:       12,
+	})
+	if len(evs) != 1 || evs[0].Kind != EvOrder || evs[0].Status != StatusAccepted || evs[0].Resting {
+		t.Fatalf("expected single non-resting StatusAccepted for untriggered stop, got %+v", evs)
+	}
+
+	// Trigger the stop by buying the 5 shares at 10500 -> lastTradePrice becomes 10500 >= StopPrice(10500).
+	triggerEvs := h.limit(bob, "trigger-buy", Buy, 10500, 5)
+
+	var stopFilled bool
+	var stopTradedQty int64
+	for _, ev := range triggerEvs {
+		if ev.Kind == EvTrade && ev.Trade.BuyOrderID == uid("stop-buy-1") {
+			stopTradedQty += ev.Trade.Qty
+			if ev.Trade.Price != 10600 {
+				t.Fatalf("expected stop trade at 10600, got %d", ev.Trade.Price)
+			}
+		}
+		if ev.Kind == EvOrder && ev.OrderID == uid("stop-buy-1") && ev.Status == StatusFilled {
+			stopFilled = true
+			if ev.Type != Stop || ev.StopPrice != 10500 {
+				t.Fatalf("expected original Stop type and StopPrice preserved on fill, got %+v", ev)
+			}
+		}
+	}
+	if !stopFilled || stopTradedQty != 12 {
+		t.Fatalf("expected stop-buy-1 to fill 12 shares, filled=%v qty=%d evs=%+v", stopFilled, stopTradedQty, triggerEvs)
+	}
+}
+
+func TestStopLimitOrderRestingAfterTrigger(t *testing.T) {
+	h := newHarness(t)
+
+	// Seed lastTradePrice = 10000.
+	h.limit(alice, "s1", Sell, 10000, 10)
+	h.limit(bob, "b1", Buy, 10000, 10)
+
+	// Place resting bids at 9500 (qty 5) and 9300 (qty 10).
+	h.limit(bob, "bid-95", Buy, 9500, 5)
+	h.limit(bob, "bid-93", Buy, 9300, 10)
+
+	// Place a SELL STOP_LIMIT: triggers at StopPrice=9500, limit Price=9400, Qty=12.
+	evs := h.do(Command{
+		Kind:      CmdPlace,
+		OrderID:   uid("sl-1"),
+		UserID:    carol,
+		Side:      Sell,
+		Type:      StopLimit,
+		Price:     9400,
+		StopPrice: 9500,
+		Qty:       12,
+	})
+	if len(evs) != 1 || evs[0].Kind != EvOrder || evs[0].Status != StatusAccepted || evs[0].Resting {
+		t.Fatalf("expected non-resting StatusAccepted for stop-limit, got %+v", evs)
+	}
+
+	// Sell 5 shares into bid-95 -> trade at 9500 triggers sl-1.
+	// However, bid-95 is exhausted by the triggering trade, and the next bid is 9300 < limit 9400.
+	// So sl-1 must rest on the ask book at 9400 for all 12 shares!
+	trigEvs := h.limit(alice, "trig-sell", Sell, 9500, 5)
+
+	rep := last(t, trigEvs, "sl-1")
+	if rep.Status != StatusAccepted || !rep.Resting || rep.Price != 9400 || rep.LeavesQty != 12 {
+		t.Fatalf("expected triggered stop-limit to rest on book at 9400, got %+v", rep)
+	}
+	snap := h.e.Book("AAPL").Depth(5)
+	if len(snap.Asks) != 1 || snap.Asks[0].Price != 9400 || snap.Asks[0].Qty != 12 {
+		t.Fatalf("expected ask depth of 12 @ 9400, got %+v", snap.Asks)
+	}
+}
+
+func TestStopOrderCancellationAndRejection(t *testing.T) {
+	h := newHarness(t)
+
+	// Seed lastTradePrice = 10000.
+	h.limit(alice, "s1", Sell, 10000, 10)
+	h.limit(bob, "b1", Buy, 10000, 10)
+
+	// BUY STOP at StopPrice=9900 (already <= 10000) must be rejected with ReasonStopHit.
+	rejBuy := h.do(Command{
+		Kind: CmdPlace, OrderID: uid("bad-buy-stop"),
+		UserID: alice, Side: Buy, Type: Stop, StopPrice: 9900, Qty: 5,
+	})
+	if len(rejBuy) != 1 || rejBuy[0].Kind != EvOrder || rejBuy[0].Status != StatusRejected || rejBuy[0].Reason != ReasonStopHit {
+		t.Fatalf("expected ReasonStopHit on already-crossed buy stop, got %+v", rejBuy)
+	}
+
+	// SELL STOP at StopPrice=10100 (already >= 10000) must be rejected with ReasonStopHit.
+	rejSell := h.do(Command{
+		Kind: CmdPlace, OrderID: uid("bad-sell-stop"),
+		UserID: alice, Side: Sell, Type: Stop, StopPrice: 10100, Qty: 5,
+	})
+	if len(rejSell) != 1 || rejSell[0].Kind != EvOrder || rejSell[0].Status != StatusRejected || rejSell[0].Reason != ReasonStopHit {
+		t.Fatalf("expected ReasonStopHit on already-crossed sell stop, got %+v", rejSell)
+	}
+
+	// Valid SELL STOP at StopPrice=9500, then cancel before trigger.
+	h.do(Command{
+		Kind: CmdPlace, OrderID: uid("cancel-me"),
+		UserID: alice, Side: Sell, Type: Stop, StopPrice: 9500, Qty: 8,
+	})
+	cancEvs := h.cancel(alice, "cancel-me")
+	if len(cancEvs) != 1 || cancEvs[0].Kind != EvOrder || cancEvs[0].Status != StatusCancelled || cancEvs[0].LeavesQty != 0 {
+		t.Fatalf("expected StatusCancelled on untriggered stop, got %+v", cancEvs)
+	}
+}
+
+func TestStopOrderSnapshotRestore(t *testing.T) {
+	cmds := []Command{
+		{ID: uid("c1"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("s1"), UserID: alice, Side: Sell, Type: Limit, Price: 10000, Qty: 10, Timestamp: 1},
+		{ID: uid("c2"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("b1"), UserID: bob, Side: Buy, Type: Limit, Price: 10000, Qty: 10, Timestamp: 2},
+		{ID: uid("c3"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("ask-105"), UserID: alice, Side: Sell, Type: Limit, Price: 10500, Qty: 10, Timestamp: 3},
+		{ID: uid("c4"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("ask-108"), UserID: alice, Side: Sell, Type: Limit, Price: 10800, Qty: 20, Timestamp: 4},
+		{ID: uid("c5"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("stop-1"), UserID: carol, Side: Buy, Type: Stop, Price: 11000, StopPrice: 10500, Qty: 6, Timestamp: 5},
+		{ID: uid("c6"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("stop-2"), UserID: carol, Side: Buy, Type: StopLimit, Price: 10700, StopPrice: 10500, Qty: 8, Timestamp: 6},
+		// Snapshot taken right before the triggering trade at 10500:
+		{ID: uid("c7"), Kind: CmdPlace, Symbol: "AAPL", OrderID: uid("trig"), UserID: bob, Side: Buy, Type: Limit, Price: 10500, Qty: 4, Timestamp: 7},
+	}
+
+	full := New()
+	var fullEvs []Event
+	for _, c := range cmds {
+		fullEvs = append(fullEvs, full.Process(c)...)
+	}
+
+	split := len(cmds) - 1
+	part1 := New()
+	var splitEvs []Event
+	for _, c := range cmds[:split] {
+		splitEvs = append(splitEvs, part1.Process(c)...)
+	}
+	blob, err := part1.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	part2, err := Restore(blob)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if err := part2.CheckInvariants(); err != nil {
+		t.Fatalf("restored invariants: %v", err)
+	}
+	for _, c := range cmds[split:] {
+		splitEvs = append(splitEvs, part2.Process(c)...)
+	}
+
+	if len(fullEvs) != len(splitEvs) {
+		t.Fatalf("event count mismatch full=%d restored=%d", len(fullEvs), len(splitEvs))
+	}
+	for i := range fullEvs {
+		if fullEvs[i] != splitEvs[i] {
+			t.Fatalf("event %d differs:\nfull:     %+v\nrestored: %+v", i, fullEvs[i], splitEvs[i])
+		}
+	}
+}

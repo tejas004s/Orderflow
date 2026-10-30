@@ -146,8 +146,9 @@ export const api = {
   placeOrder: async (params: {
     symbol: string;
     side: 'BUY' | 'SELL';
-    type: 'LIMIT' | 'MARKET';
+    type: 'LIMIT' | 'MARKET' | 'STOP' | 'STOP_LIMIT';
     price?: number;
+    stop_price?: number;
     qty: number;
   }): Promise<Order> => {
     const idemKey =
