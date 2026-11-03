@@ -183,7 +183,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
       <div ref={containerRef} className="chart-canvas" />
 
       <div className="groww-chart-toolbar">
-        <div className="groww-exchange-badge">NASDAQ · {symbol}</div>
+        <div className="groww-exchange-badge">OFX · EQ · {symbol}</div>
 
         <div className="groww-timeframe-pills">
           {INTERVALS.map((tf) => (
@@ -199,7 +199,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
         </div>
 
         <div className="groww-chart-meta">
-          <span className="groww-chart-tag">Candlesticks + Volume</span>
+          <span className="groww-chart-tag">OHLCV Candlesticks + Volume</span>
         </div>
       </div>
     </div>

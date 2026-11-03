@@ -25,7 +25,7 @@ const DEFAULT_INSTRUMENT: Instrument = {
   status: 'ACTIVE',
 };
 
-const GrowwLogo: React.FC<{ size?: number }> = ({ size = 34 }) => (
+const OrderFlowExchangeLogo: React.FC<{ size?: number }> = ({ size = 34 }) => (
   <svg
     width={size}
     height={size}
@@ -34,18 +34,17 @@ const GrowwLogo: React.FC<{ size?: number }> = ({ size = 34 }) => (
     xmlns="http://www.w3.org/2000/svg"
     style={{ flexShrink: 0 }}
   >
-    <circle cx="20" cy="20" r="20" fill="#5367FF" />
-    <path
-      d="M0 22C6.5 17 13.5 25 20 20C26.5 15 33.5 21 40 16V40H0V22Z"
-      fill="#00D09C"
-    />
-    <circle
-      cx="20"
-      cy="20"
-      r="19"
-      stroke="rgba(255,255,255,0.22)"
-      strokeWidth="1.5"
-    />
+    <rect width="40" height="40" rx="10" fill="#181A20" />
+    {/* Bid side bars (left, emerald) */}
+    <rect x="6" y="10" width="12" height="4" rx="2" fill="#00D09C" />
+    <rect x="6" y="18" width="9" height="4" rx="2" fill="#00D09C" />
+    <rect x="6" y="26" width="14" height="4" rx="2" fill="#00D09C" />
+    {/* Ask side bars (right, coral) */}
+    <rect x="22" y="10" width="12" height="4" rx="2" fill="#EB5B3C" />
+    <rect x="25" y="18" width="9" height="4" rx="2" fill="#EB5B3C" />
+    <rect x="20" y="26" width="14" height="4" rx="2" fill="#EB5B3C" />
+    {/* Center matching axis */}
+    <rect x="19.25" y="7" width="1.5" height="26" rx="0.75" fill="rgba(255,255,255,0.35)" />
   </svg>
 );
 
@@ -221,7 +220,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // ---- Groww Login / Onboarding Screen -------------------------------------
+  // ---- OrderFlow Stock Exchange Login / Onboarding Screen -------------------
   if (!auth) {
     return (
       <div className="groww-auth-backdrop">
@@ -229,26 +228,26 @@ export const App: React.FC = () => {
           <div className="groww-auth-promo">
             <div className="groww-auth-promo-top">
               <div className="groww-brand-row">
-                <GrowwLogo size={40} />
-                <span className="groww-promo-brand">Groww</span>
+                <OrderFlowExchangeLogo size={40} />
+                <span className="groww-promo-brand">OrderFlow Exchange</span>
               </div>
-              <h2>Simple, Free Investing &amp; Real-Time Paper Trading.</h2>
+              <h2>Electronic Central Limit Order Book &amp; Matching Engine.</h2>
               <p>
-                Experience institutional price-time priority matching, double-entry ledger
-                settlement, and sub-millisecond WebSocket market depth.
+                Direct Market Access (DMA) to a deterministic price-time priority stock
+                exchange with real-time L2 depth, LULD circuit halts, and double-entry clearing.
               </p>
             </div>
             <div className="groww-auth-features">
-              <div className="groww-feature-pill">✓ $100,000 Instant Virtual Cash</div>
-              <div className="groww-feature-pill">✓ Limit, Market, Stop &amp; Stop-Limit</div>
-              <div className="groww-feature-pill">✓ LULD ±10% Circuit Breakers</div>
+              <div className="groww-feature-pill">✓ $100,000 Clearing Member Margin</div>
+              <div className="groww-feature-pill">✓ Limit, Market, Stop &amp; Stop-Limit Book</div>
+              <div className="groww-feature-pill">✓ LULD ±10% Exchange Circuit Breakers</div>
             </div>
           </div>
 
           <div className="groww-auth-form-pane">
             <div className="groww-auth-header">
-              <h3>Welcome to Groww · OrderFlow</h3>
-              <p className="muted">Sign in or create your paper trading account in 1 click</p>
+              <h3>OrderFlow Stock Exchange (OFX)</h3>
+              <p className="muted">Authenticate your trading member session to access the CLOB</p>
             </div>
 
             <div className="groww-pad-side-tabs" style={{ marginBottom: '18px' }}>
@@ -257,42 +256,44 @@ export const App: React.FC = () => {
                 className={`groww-side-tab buy-tab ${authMode === 'register' ? 'active' : ''}`}
                 onClick={() => setAuthMode('register')}
               >
-                Register ($100k Cash)
+                New Member ($100k Margin)
               </button>
               <button
                 type="button"
                 className={`groww-side-tab buy-tab ${authMode === 'login' ? 'active' : ''}`}
                 onClick={() => setAuthMode('login')}
               >
-                Sign In
+                Member Sign In
               </button>
             </div>
 
             <form onSubmit={handleAuthSubmit} className="groww-login-form">
               <label className="groww-login-field">
-                <span>Your Email Address</span>
+                <span>Member Email ID</span>
                 <input
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Enter your email"
+                  placeholder="Enter member email"
                 />
               </label>
               <label className="groww-login-field">
-                <span>Password</span>
+                <span>Access Passphrase</span>
                 <input
                   type="password"
                   required
                   minLength={6}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter password"
+                  placeholder="Enter passphrase"
                 />
               </label>
 
               <button type="submit" className="groww-submit-btn groww-buy-btn">
-                {authMode === 'register' ? 'Continue & Claim $100,000' : 'Continue to Terminal'}
+                {authMode === 'register'
+                  ? 'Register Member & Enter Exchange'
+                  : 'Connect to Exchange Matching Engine'}
               </button>
               {authError && <div className="groww-feedback err">{authError}</div>}
             </form>
@@ -362,7 +363,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="groww-app">
-      {/* Groww Top Navigation Bar */}
+      {/* OrderFlow Exchange Top Navigation Bar */}
       <header className="groww-navbar">
         <div className="groww-navbar-inner">
           <div className="groww-nav-left">
@@ -370,10 +371,10 @@ export const App: React.FC = () => {
               className="groww-brand"
               onClick={() => handleNavClick('explore', 'positions')}
             >
-              <GrowwLogo size={34} />
+              <OrderFlowExchangeLogo size={34} />
               <div className="groww-brand-text">
-                <span className="groww-brand-name">Groww</span>
-                <span className="groww-brand-tag">ORDERFLOW</span>
+                <span className="groww-brand-name">OrderFlow</span>
+                <span className="groww-brand-tag">EXCHANGE · CLOB</span>
               </div>
             </div>
 
@@ -383,39 +384,39 @@ export const App: React.FC = () => {
                 className={`groww-nav-link ${navSection === 'explore' ? 'active' : ''}`}
                 onClick={() => handleNavClick('explore', 'positions')}
               >
-                Explore
+                Market Watch
               </button>
               <button
                 type="button"
                 className={`groww-nav-link ${navSection === 'investments' ? 'active' : ''}`}
                 onClick={() => handleNavClick('investments', 'positions')}
               >
-                Investments
+                Net Positions
               </button>
               <button
                 type="button"
                 className={`groww-nav-link ${navSection === 'orders' ? 'active' : ''}`}
                 onClick={() => handleNavClick('orders', 'open_orders')}
               >
-                Orders
+                Order Blotter
               </button>
               <button
                 type="button"
                 className={`groww-nav-link ${navSection === 'leaderboard' ? 'active' : ''}`}
                 onClick={() => handleNavClick('leaderboard', 'leaderboard')}
               >
-                Leaderboard
+                Member Ranks
               </button>
             </nav>
           </div>
 
-          {/* Groww Global Search Bar */}
+          {/* Exchange Instrument Search Bar */}
           <div className="groww-search-container">
             <span className="groww-search-icon">🔍</span>
             <input
               type="text"
               className="groww-search-input"
-              placeholder="What are you looking for today? Search AAPL, NVDA, MSFT…"
+              placeholder="Search listed instruments on OFX (AAPL, NVDA, MSFT…)"
               value={searchQuery}
               onFocus={() => setSearchOpen(true)}
               onBlur={() => window.setTimeout(() => setSearchOpen(false), 180)}
@@ -443,7 +444,7 @@ export const App: React.FC = () => {
                         <div>
                           <div className="bold">{inst.name}</div>
                           <div className="muted" style={{ fontSize: '11px' }}>
-                            NASDAQ · {inst.symbol}
+                            OFX · EQ · {inst.symbol}
                           </div>
                         </div>
                       </div>
@@ -457,8 +458,8 @@ export const App: React.FC = () => {
 
           <div className="groww-nav-right">
             {portfolio && (
-              <div className="groww-wallet-pill" title="Available Cash Balance">
-                <span className="muted">Wallet</span>
+              <div className="groww-wallet-pill" title="Available Clearing Margin">
+                <span className="muted">Margin</span>
                 <span className="mono bold">{formatUSD(portfolio.cash_available)}</span>
               </div>
             )}
@@ -709,24 +710,24 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Sticky Right Column: Investment Summary + Groww Buy/Sell Order Pad */}
+        {/* Sticky Right Column: Clearing Account Summary + DMA Order Entry Pad */}
         <aside className="groww-right-column">
           {portfolio && (
             <div className="groww-card groww-portfolio-summary-card">
               <div className="groww-summary-card-head">
-                <span className="groww-summary-label">Your Investments</span>
+                <span className="groww-summary-label">Member Clearing Account</span>
                 <button
                   type="button"
                   className="groww-link-btn"
                   onClick={() => handleNavClick('investments', 'positions')}
                 >
-                  View Holdings →
+                  Net Positions →
                 </button>
               </div>
               <div className="groww-summary-metrics">
                 <div>
                   <div className="muted" style={{ fontSize: '11px' }}>
-                    Total Equity
+                    Total Member Equity
                   </div>
                   <div className="groww-summary-big mono">
                     {formatUSD(portfolio.total_equity)}
@@ -734,7 +735,7 @@ export const App: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <div className="muted" style={{ fontSize: '11px' }}>
-                    Total Returns
+                    Unrealised MTM P&amp;L
                   </div>
                   <div
                     className={`groww-summary-big mono ${

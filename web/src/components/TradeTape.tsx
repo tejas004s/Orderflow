@@ -20,11 +20,11 @@ export const TradeTape: React.FC<TradeTapeProps> = ({ symbol, trades }) => {
     <div className="groww-card tape-panel">
       <div className="groww-section-header">
         <div>
-          <h3 className="groww-section-title">Market Trades</h3>
-          <span className="groww-section-sub">Real-time execution stream · {symbol}</span>
+          <h3 className="groww-section-title">Exchange Trade Tape</h3>
+          <span className="groww-section-sub">Matched fills stream · {symbol}</span>
         </div>
         <span className="groww-live-pill">
-          <span className="groww-live-dot" /> LIVE
+          <span className="groww-live-dot" /> MATCHING
         </span>
       </div>
 

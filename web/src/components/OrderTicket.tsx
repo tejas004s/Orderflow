@@ -120,12 +120,12 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
 
   return (
     <div className="groww-card groww-order-pad">
-      {/* Groww Order Pad Header */}
+      {/* DMA Order Pad Header */}
       <div className="groww-pad-top">
         <div className="groww-pad-stock-info">
-          <div className="groww-pad-title">{instrument.name}</div>
+          <div className="groww-pad-title">DMA Order Entry · {instrument.symbol}</div>
           <div className="groww-pad-exch">
-            NASDAQ · {instrument.symbol} · <span className="mono">${formatPrice(refPx)}</span>
+            OFX · EQ · {instrument.name} · LTP <span className="mono">${formatPrice(refPx)}</span>
           </div>
         </div>
       </div>
@@ -184,8 +184,8 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
         {/* Qty Row */}
         <div className="groww-input-row">
           <div className="groww-input-label">
-            <span>Qty</span>
-            <span className="groww-input-sub">NASDAQ · Lot {instrument.lot_size}</span>
+            <span>Order Qty</span>
+            <span className="groww-input-sub">OFX · Lot Size {instrument.lot_size}</span>
           </div>
           <div className="groww-input-box-wrap">
             <input

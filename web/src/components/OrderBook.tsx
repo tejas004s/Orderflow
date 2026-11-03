@@ -39,9 +39,9 @@ export const OrderBook: React.FC<OrderBookProps> = ({
     <div className="groww-card orderbook-panel" data-testid="orderbook">
       <div className="groww-section-header">
         <div>
-          <h3 className="groww-section-title">Market Depth</h3>
+          <h3 className="groww-section-title">Central Limit Order Book (L2 Depth)</h3>
           <span className="groww-section-sub">
-            {symbol} L2 Order Book · Click any price level to pre-fill ticket
+            {symbol} Price-Time Priority Book · Click any level to pre-fill DMA order pad
           </span>
         </div>
         <div className="groww-depth-badges">
@@ -54,14 +54,14 @@ export const OrderBook: React.FC<OrderBookProps> = ({
         </div>
       </div>
 
-      {/* Groww Buy vs Sell Sentiment Bar */}
+      {/* Bid vs Ask Book Imbalance Bar */}
       <div className="groww-sentiment-box">
         <div className="groww-sentiment-labels">
           <span className="buy-text">
-            Buy orders <strong className="mono">{buyPct}%</strong>
+            Bid Book Volume <strong className="mono">{buyPct}%</strong>
           </span>
           <span className="sell-text">
-            <strong className="mono">{sellPct}%</strong> Sell orders
+            <strong className="mono">{sellPct}%</strong> Ask Book Volume
           </span>
         </div>
         <div className="groww-sentiment-bar">

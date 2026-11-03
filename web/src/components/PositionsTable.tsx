@@ -99,35 +99,35 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({
             className={`groww-tab-item ${tab === 'positions' ? 'active' : ''}`}
             onClick={() => setTab('positions')}
           >
-            Holdings ({positions.length})
+            Net Positions ({positions.length})
           </button>
           <button
             type="button"
             className={`groww-tab-item ${tab === 'open_orders' ? 'active' : ''}`}
             onClick={() => setTab('open_orders')}
           >
-            Open Orders ({openOrders.length})
+            Working Orders ({openOrders.length})
           </button>
           <button
             type="button"
             className={`groww-tab-item ${tab === 'history' ? 'active' : ''}`}
             onClick={() => setTab('history')}
           >
-            All Orders ({orders.length})
+            Order Blotter ({orders.length})
           </button>
           <button
             type="button"
             className={`groww-tab-item ${tab === 'leaderboard' ? 'active' : ''}`}
             onClick={() => setTab('leaderboard')}
           >
-            Leaderboard ({leaderboard.length})
+            Member Leaderboard ({leaderboard.length})
           </button>
           <button
             type="button"
             className={`groww-tab-item ${tab === 'equity' ? 'active' : ''}`}
             onClick={() => setTab('equity')}
           >
-            Equity Curve
+            Clearing Equity Curve
           </button>
         </div>
 
@@ -137,7 +137,7 @@ export const PositionsTable: React.FC<PositionsTableProps> = ({
           disabled={exporting}
           onClick={handleDownloadCSV}
         >
-          {exporting ? 'Exporting…' : '⬇ Download Fill History (CSV)'}
+          {exporting ? 'Exporting…' : '⬇ Export Trade Register (CSV)'}
         </button>
       </div>
 
