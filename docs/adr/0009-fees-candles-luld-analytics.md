@@ -21,3 +21,4 @@
 ### 4. Portfolio Equity Curve, Leaderboard & Trade History CSV Export (`feat/portfolio-analytics`)
 - **REST Endpoints:** `api-gateway` exposes `GET /api/v1/leaderboard` (top traders ranked by `available + reserved + sum(position * mark_price)`) and `GET /api/v1/account/fills.csv` (streaming RFC 4180 CSV export of the authenticated trader's fills with role, notional, and fee columns).
 - **Terminal Analytics UI:** `PositionsTable.tsx` adds a **Leaderboard** tab, a live **Equity Curve** SVG chart, and a **Download Fill History (CSV)** action.
+

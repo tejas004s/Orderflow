@@ -169,6 +169,21 @@ export const api = {
     });
   },
 
+  replaceOrder: async (
+    orderId: string,
+    params: { price: number; qty: number }
+  ): Promise<Order> => {
+    const idemKey =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+    return request<Order>(`/api/v1/orders/${orderId}`, {
+      method: 'PATCH',
+      headers: { 'Idempotency-Key': idemKey },
+      body: JSON.stringify(params),
+    });
+  },
+
   getLeaderboard: async (): Promise<LeaderboardEntry[]> => {
     const res = await request<{ leaderboard: LeaderboardEntry[] }>('/api/v1/leaderboard');
     return res.leaderboard;

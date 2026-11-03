@@ -19,8 +19,12 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
 }) => {
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
   const [orderType, setOrderType] = useState<OrderType>('LIMIT');
-  const [priceStr, setPriceStr] = useState<string>(formatPrice(instrument.last_price || instrument.ref_price));
-  const [stopPriceStr, setStopPriceStr] = useState<string>(formatPrice(instrument.last_price || instrument.ref_price));
+  const [priceStr, setPriceStr] = useState<string>(
+    formatPrice(instrument.last_price || instrument.ref_price)
+  );
+  const [stopPriceStr, setStopPriceStr] = useState<string>(
+    formatPrice(instrument.last_price || instrument.ref_price)
+  );
   const [qtyStr, setQtyStr] = useState<string>('10');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -83,7 +87,7 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
       });
       setFeedback({
         kind: 'ok',
-        text: `${ord.side} ${ord.qty} ${ord.symbol} accepted (${ord.id.slice(0, 8)})`,
+        text: `${ord.side} ${ord.qty} ${ord.symbol} order placed (${ord.id.slice(0, 8)})`,
       });
       onOrderPlaced();
     } catch (err) {
@@ -103,7 +107,7 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
         setFeedback({ kind: 'ok', text: 'Added +$100,000.00 virtual cash' });
       } else {
         await api.seedPortfolio({ symbol: instrument.symbol, shares: 100 });
-        setFeedback({ kind: 'ok', text: `Granted +100 ${instrument.symbol} shares` });
+        setFeedback({ kind: 'ok', text: `Credited +100 ${instrument.symbol} shares` });
       }
       onOrderPlaced();
     } catch (err) {
@@ -115,123 +119,180 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
   };
 
   return (
-    <div className="panel ticket-panel">
-      <div className="panel-header">
-        <span>Order Ticket · {instrument.symbol}</span>
-        <span className="muted">GTC / IOC</span>
+    <div className="groww-card groww-order-pad">
+      {/* Groww Order Pad Header */}
+      <div className="groww-pad-top">
+        <div className="groww-pad-stock-info">
+          <div className="groww-pad-title">{instrument.name}</div>
+          <div className="groww-pad-exch">
+            NASDAQ · {instrument.symbol} · <span className="mono">${formatPrice(refPx)}</span>
+          </div>
+        </div>
       </div>
 
-      <div className="side-toggle">
+      {/* Groww BUY / SELL Underline Tabs */}
+      <div className="groww-pad-side-tabs">
         <button
           type="button"
-          className={`side-btn buy-btn ${side === 'BUY' ? 'active' : ''}`}
+          className={`groww-side-tab buy-tab ${side === 'BUY' ? 'active' : ''}`}
           onClick={() => setSide('BUY')}
         >
           BUY
         </button>
         <button
           type="button"
-          className={`side-btn sell-btn ${side === 'SELL' ? 'active' : ''}`}
+          className={`groww-side-tab sell-tab ${side === 'SELL' ? 'active' : ''}`}
           onClick={() => setSide('SELL')}
         >
           SELL
         </button>
       </div>
 
-      <div className="type-toggle">
+      {/* Groww Order Type Pill Selector */}
+      <div className="groww-pad-pills">
         <button
           type="button"
-          className={`tab-btn ${orderType === 'LIMIT' ? 'active' : ''}`}
+          className={`groww-type-pill ${orderType === 'LIMIT' ? 'active' : ''}`}
           onClick={() => setOrderType('LIMIT')}
         >
           Limit
         </button>
         <button
           type="button"
-          className={`tab-btn ${orderType === 'MARKET' ? 'active' : ''}`}
+          className={`groww-type-pill ${orderType === 'MARKET' ? 'active' : ''}`}
           onClick={() => setOrderType('MARKET')}
         >
           Market
         </button>
         <button
           type="button"
-          className={`tab-btn ${orderType === 'STOP' ? 'active' : ''}`}
+          className={`groww-type-pill ${orderType === 'STOP' ? 'active' : ''}`}
           onClick={() => setOrderType('STOP')}
         >
-          Stop
+          SL-M (Stop)
         </button>
         <button
           type="button"
-          className={`tab-btn ${orderType === 'STOP_LIMIT' ? 'active' : ''}`}
+          className={`groww-type-pill ${orderType === 'STOP_LIMIT' ? 'active' : ''}`}
           onClick={() => setOrderType('STOP_LIMIT')}
         >
-          Stop Limit
+          SL-L (Stop Limit)
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="ticket-form">
-        {(orderType === 'STOP' || orderType === 'STOP_LIMIT') && (
-          <label className="field">
-            <span>Stop Price (USD)</span>
+      <form onSubmit={handleSubmit} className="groww-pad-form">
+        {/* Qty Row */}
+        <div className="groww-input-row">
+          <div className="groww-input-label">
+            <span>Qty</span>
+            <span className="groww-input-sub">NASDAQ · Lot {instrument.lot_size}</span>
+          </div>
+          <div className="groww-input-box-wrap">
             <input
               type="number"
-              step="0.01"
-              min="0.01"
-              value={stopPriceStr}
-              onChange={(e) => setStopPriceStr(e.target.value)}
-              className="mono"
+              step={instrument.lot_size}
+              min={instrument.lot_size}
+              max={instrument.max_order_qty}
+              value={qtyStr}
+              onChange={(e) => setQtyStr(e.target.value)}
+              className="groww-pad-input mono"
             />
-          </label>
+          </div>
+        </div>
+
+        {/* Quick Qty Chips */}
+        <div className="groww-quick-qty">
+          {[5, 10, 25, 50, 100].map((q) => (
+            <button
+              key={q}
+              type="button"
+              className={`groww-qty-chip ${qty === q ? 'active' : ''}`}
+              onClick={() => setQtyStr(String(q))}
+            >
+              {q} sh
+            </button>
+          ))}
+        </div>
+
+        {/* Stop Trigger Price Row (for STOP and STOP_LIMIT) */}
+        {(orderType === 'STOP' || orderType === 'STOP_LIMIT') && (
+          <div className="groww-input-row">
+            <div className="groww-input-label">
+              <span>Stop Price (USD)</span>
+              <span className="groww-input-sub">Trigger at $</span>
+            </div>
+            <div className="groww-input-box-wrap">
+              <span className="groww-currency-prefix">$</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={stopPriceStr}
+                onChange={(e) => setStopPriceStr(e.target.value)}
+                className="groww-pad-input mono with-prefix"
+              />
+            </div>
+          </div>
         )}
 
+        {/* Price Row */}
         {orderType === 'LIMIT' || orderType === 'STOP_LIMIT' ? (
-          <label className="field">
-            <span>Limit Price (USD)</span>
-            <input
-              type="number"
-              step="0.01"
-              min="0.01"
-              value={priceStr}
-              onChange={(e) => setPriceStr(e.target.value)}
-              className="mono"
-            />
-          </label>
-        ) : orderType === 'STOP' ? (
-          <div className="market-band-note">
-            Stop {side}: triggers at ${stopPriceStr} and executes as Market (IOC).
+          <div className="groww-input-row">
+            <div className="groww-input-label">
+              <span>Price</span>
+              <span className="groww-input-sub">Limit Order</span>
+            </div>
+            <div className="groww-input-box-wrap">
+              <span className="groww-currency-prefix">$</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={priceStr}
+                onChange={(e) => setPriceStr(e.target.value)}
+                className="groww-pad-input mono with-prefix"
+              />
+            </div>
           </div>
         ) : (
-          <div className="market-band-note">
-            Market {side}: executes immediately (IOC) with 5% price protection band.
+          <div className="groww-input-row">
+            <div className="groww-input-label">
+              <span>Price</span>
+              <span className="groww-input-sub">
+                {orderType === 'STOP' ? 'Market on Trigger' : 'Instant IOC (5% band)'}
+              </span>
+            </div>
+            <div className="groww-input-box-wrap">
+              <input
+                type="text"
+                disabled
+                value="At Market"
+                className="groww-pad-input disabled-market"
+              />
+            </div>
           </div>
         )}
 
-        <label className="field">
-          <span>Quantity (Shares)</span>
-          <input
-            type="number"
-            step={instrument.lot_size}
-            min={instrument.lot_size}
-            max={instrument.max_order_qty}
-            value={qtyStr}
-            onChange={(e) => setQtyStr(e.target.value)}
-            className="mono"
-          />
-        </label>
+        <div className="groww-pad-divider" />
 
-        <div className="ticket-summary">
-          <div className="summary-row">
-            <span>Available {side === 'BUY' ? 'Cash' : instrument.symbol}</span>
-            <span className="mono">
-              {side === 'BUY' ? formatUSD(cashAvailable) : `${sharesAvailable.toLocaleString()} sh`}
+        {/* Balance & Margin Summary */}
+        <div className="groww-pad-summary">
+          <div className="groww-summary-line">
+            <span className="muted">
+              {side === 'BUY' ? 'Balance Available' : `${instrument.symbol} Available`}
+            </span>
+            <span className="mono bold">
+              {side === 'BUY'
+                ? formatUSD(cashAvailable)
+                : `${sharesAvailable.toLocaleString()} shares`}
             </span>
           </div>
-          <div className="summary-row">
-            <span>{side === 'BUY' ? 'Est. Reservation' : 'Est. Proceeds'}</span>
-            <span className="mono">{formatUSD(estNotional)}</span>
+          <div className="groww-summary-line">
+            <span className="muted">{side === 'BUY' ? 'Approx. Req.' : 'Approx. Value'}</span>
+            <span className="mono bold">{formatUSD(estNotional)}</span>
           </div>
-          <div className="summary-row">
-            <span>Fee Tier</span>
+          <div className="groww-summary-line fee-line">
+            <span className="muted">Exchange Fee Tier</span>
             <span className="mono muted">Maker -1 bps · Taker +5 bps</span>
           </div>
         </div>
@@ -239,36 +300,41 @@ export const OrderTicket: React.FC<OrderTicketProps> = ({
         <button
           type="submit"
           disabled={submitting || instrument.status === 'HALTED'}
-          className={`submit-order-btn ${side === 'BUY' ? 'buy-submit' : 'sell-submit'}`}
+          className={`groww-submit-btn ${side === 'BUY' ? 'groww-buy-btn' : 'groww-sell-btn'}`}
         >
           {instrument.status === 'HALTED'
             ? `TRADING HALTED (LULD) · ${instrument.symbol}`
             : submitting
-              ? 'Submitting…'
-              : `${side} ${qty > 0 ? qty : ''} ${instrument.symbol} @ ${
-                  orderType === 'MARKET'
-                    ? 'MKT'
-                    : orderType === 'STOP'
-                      ? `Stop $${stopPriceStr}`
-                      : orderType === 'STOP_LIMIT'
-                        ? `$${priceStr} (Stop $${stopPriceStr})`
-                        : `$${priceStr}`
-                }`}
+              ? 'Placing Order…'
+              : `${side} ${instrument.symbol}`}
         </button>
 
         {feedback && (
-          <div className={`ticket-feedback ${feedback.kind}`}>{feedback.text}</div>
+          <div className={`groww-feedback ${feedback.kind === 'ok' ? 'ok' : 'err'}`}>
+            {feedback.text}
+          </div>
         )}
       </form>
 
-      <div className="seed-toolbar">
-        <span className="muted">Paper Faucet:</span>
-        <button type="button" className="ghost-btn" onClick={() => handleQuickSeed('cash')}>
-          +$100k Cash
-        </button>
-        <button type="button" className="ghost-btn" onClick={() => handleQuickSeed('shares')}>
-          +100 {instrument.symbol}
-        </button>
+      {/* Paper Trading Faucet Footer */}
+      <div className="groww-faucet-footer">
+        <span className="muted">Paper Wallet Faucet</span>
+        <div className="groww-faucet-btns">
+          <button
+            type="button"
+            className="groww-faucet-btn"
+            onClick={() => handleQuickSeed('cash')}
+          >
+            + $100k Cash
+          </button>
+          <button
+            type="button"
+            className="groww-faucet-btn"
+            onClick={() => handleQuickSeed('shares')}
+          >
+            + 100 {instrument.symbol}
+          </button>
+        </div>
       </div>
     </div>
   );
