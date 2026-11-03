@@ -209,7 +209,7 @@ body {
 }
 
 /* ============================================================================
-   GROWW TOP NAVIGATION BAR
+   ORDERFLOW STOCK EXCHANGE — 3-TIER INSTITUTIONAL NAVIGATION HEADER
    ============================================================================ */
 .groww-app {
   min-height: 100vh;
@@ -217,29 +217,121 @@ body {
   flex-direction: column;
 }
 
-.groww-navbar {
-  position: sticky;
-  top: 0;
-  z-index: 40;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
+/* Tier 1: Exchange Session Status & Composite Index Strip */
+.ofx-status-strip {
+  background: #12151e;
+  color: #cbd5e1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11.5px;
 }
 
-.groww-navbar-inner {
-  max-width: 1320px;
+.ofx-status-inner {
+  max-width: 1360px;
   margin: 0 auto;
-  height: 68px;
+  height: 32px;
   padding: 0 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
+}
+
+.ofx-status-left,
+.ofx-status-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.ofx-session-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #00d09c;
+}
+
+.ofx-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #00d09c;
+  box-shadow: 0 0 8px #00d09c;
+}
+
+.ofx-strip-divider {
+  width: 1px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.ofx-index-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.ofx-index-name {
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.03em;
+}
+
+.ofx-engine-feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ofx-engine-feed.live {
+  color: #00d09c;
+}
+
+.ofx-engine-feed.down {
+  color: #eb5b3c;
+}
+
+.ofx-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+/* Tier 2: Main Primary Navigation Bar */
+.groww-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 45;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
+}
+
+.groww-navbar-inner {
+  max-width: 1360px;
+  margin: 0 auto;
+  height: 64px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .groww-nav-left {
   display: flex;
   align-items: center;
-  gap: 32px;
+  gap: 16px;
+  flex-shrink: 0;
 }
 
 .groww-brand {
@@ -249,84 +341,126 @@ body {
   cursor: pointer;
 }
 
-.groww-brand-text {
+.ofx-brand-stack {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.ofx-brand-top {
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
 .groww-brand-name {
-  font-size: 22px;
+  font-size: 19px;
   font-weight: 800;
   color: var(--text-strong);
-  letter-spacing: -0.03em;
+  letter-spacing: -0.025em;
 }
 
 .groww-brand-tag {
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 9.5px;
+  font-weight: 800;
   color: var(--buy);
   background: var(--buy-bg);
-  padding: 2px 6px;
+  padding: 2px 5px;
   border-radius: 4px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
+}
+
+.ofx-brand-sub {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  margin-top: 2px;
+}
+
+.ofx-nav-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border);
 }
 
 .groww-nav-links {
   display: flex;
   align-items: center;
-  gap: 22px;
+  gap: 4px;
 }
 
 .groww-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   background: transparent;
   border: none;
   color: var(--muted);
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 600;
-  padding: 22px 2px;
+  padding: 8px 12px;
+  border-radius: 8px;
   cursor: pointer;
-  border-bottom: 3px solid transparent;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+  transition: all 0.15s ease;
 }
 
 .groww-nav-link:hover {
   color: var(--text-strong);
+  background: var(--hover);
 }
 
 .groww-nav-link.active {
   color: var(--buy);
-  border-bottom-color: var(--buy);
+  background: var(--buy-bg);
+  font-weight: 700;
 }
 
-/* Search Bar */
+.ofx-nav-count {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  color: var(--text-strong);
+}
+
+.ofx-nav-count.active-count {
+  background: var(--buy);
+  border-color: var(--buy);
+  color: #ffffff;
+}
+
+/* Command-Palette Search Bar */
 .groww-search-container {
   position: relative;
   flex: 1;
-  max-width: 410px;
+  max-width: 340px;
+  min-width: 190px;
 }
 
 .groww-search-icon {
   position: absolute;
-  left: 14px;
+  left: 12px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 13px;
-  opacity: 0.65;
+  color: var(--muted);
   pointer-events: none;
 }
 
 .groww-search-input {
   width: 100%;
-  height: 40px;
+  height: 38px;
   background: var(--card-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0 14px 0 38px;
+  border-radius: 9px;
+  padding: 0 34px 0 36px;
   color: var(--text-strong);
-  font-size: 13.5px;
+  font-size: 13px;
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 
 .groww-search-input:focus {
@@ -335,17 +469,45 @@ body {
   box-shadow: 0 0 0 3px var(--buy-bg);
 }
 
+.ofx-search-kbd {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  pointer-events: none;
+}
+
 .groww-search-dropdown {
   position: absolute;
-  top: 46px;
+  top: 44px;
   left: 0;
   right: 0;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: var(--shadow-lg);
   overflow: hidden;
   z-index: 60;
+}
+
+.ofx-search-drop-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 14px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: var(--card-alt);
+  border-bottom: 1px solid var(--border);
 }
 
 .groww-search-item {
@@ -365,74 +527,87 @@ body {
   background: var(--hover);
 }
 
+/* Right Controls Cluster */
 .groww-nav-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
-.groww-wallet-pill {
+.ofx-margin-widget {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   background: var(--card-alt);
   border: 1px solid var(--border);
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 13px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 10px;
 }
 
-.groww-ws-badge {
+.ofx-margin-icon {
+  color: var(--buy);
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
+}
+
+.ofx-margin-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.ofx-margin-label {
+  font-size: 9.5px;
   font-weight: 700;
-  padding: 5px 9px;
-  border-radius: 99px;
-  border: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 
-.groww-ws-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+.ofx-margin-val {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-strong);
 }
 
-.groww-ws-badge.live {
-  color: var(--buy);
+.ofx-margin-add-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--buy);
   background: var(--buy-bg);
-  border-color: transparent;
+  color: var(--buy);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.groww-ws-badge.live .groww-ws-dot {
+.ofx-margin-add-btn:hover {
   background: var(--buy);
-}
-
-.groww-ws-badge.down {
-  color: var(--sell);
-  background: var(--sell-bg);
-}
-
-.groww-ws-badge.down .groww-ws-dot {
-  background: var(--sell);
+  color: #ffffff;
 }
 
 .groww-icon-btn {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: 9px;
   border: 1px solid var(--border);
   background: var(--card-alt);
+  color: var(--text-strong);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  transition: all 0.15s ease;
 }
 
 .groww-icon-btn:hover {
   background: var(--hover);
+  border-color: var(--buy);
+  color: var(--buy);
 }
 
 .groww-user-chip {
@@ -441,67 +616,82 @@ body {
   gap: 8px;
   background: var(--card-alt);
   border: 1px solid var(--border);
-  padding: 4px 10px 4px 5px;
-  border-radius: 99px;
+  padding: 4px 6px 4px 5px;
+  border-radius: 10px;
 }
 
 .groww-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--buy);
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #00b386 0%, #5367ff 100%);
   color: #ffffff;
-  font-weight: 700;
+  font-weight: 800;
   font-size: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+.ofx-user-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
 .groww-user-email {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--text-strong);
 }
 
-.groww-logout-btn {
+.ofx-user-role {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+}
+
+.ofx-logout-icon-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  padding-left: 4px;
+  transition: all 0.15s ease;
 }
 
-.groww-logout-btn:hover {
+.ofx-logout-icon-btn:hover {
+  background: var(--sell-bg);
   color: var(--sell);
 }
 
-/* ============================================================================
-   GROWW INDICES & STOCK WATCHLIST STRIP
-   ============================================================================ */
+/* Tier 3: Listed Equities Market Watch Strip */
 .groww-ticker-bar {
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  padding: 10px 0;
+  padding: 8px 0;
 }
 
 .groww-ticker-inner {
-  max-width: 1320px;
+  max-width: 1360px;
   margin: 0 auto;
   padding: 0 20px;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
   gap: 10px;
-  overflow-x: auto;
 }
 
 .groww-stock-chip {
-  min-width: 158px;
   background: var(--card-alt);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 8px 14px;
+  padding: 8px 12px;
   cursor: pointer;
   text-align: left;
   transition: all 0.15s ease;
@@ -515,19 +705,36 @@ body {
 .groww-stock-chip.active {
   background: var(--buy-bg);
   border-color: var(--buy);
+  box-shadow: inset 0 -2px 0 var(--buy);
 }
 
 .groww-chip-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
+}
+
+.ofx-chip-sym-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .groww-chip-sym {
-  font-weight: 700;
+  font-weight: 800;
   font-size: 13px;
   color: var(--text-strong);
+}
+
+.ofx-chip-exch {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 0 4px;
+  border-radius: 3px;
 }
 
 .groww-chip-px {
@@ -536,9 +743,45 @@ body {
   color: var(--text-strong);
 }
 
-.groww-chip-chg {
-  font-size: 11.5px;
-  font-weight: 600;
+.ofx-chip-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ofx-chip-name {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ofx-chip-pct-pill {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.ofx-chip-pct-pill.up {
+  color: var(--buy);
+  background: var(--buy-bg);
+}
+
+.ofx-chip-pct-pill.down {
+  color: var(--sell);
+  background: var(--sell-bg);
+}
+
+@media (max-width: 1180px) {
+  .hide-sm {
+    display: none !important;
+  }
+  .groww-nav-link span:not(.ofx-nav-count) {
+    font-size: 12.5px;
+  }
 }
 
 /* ============================================================================

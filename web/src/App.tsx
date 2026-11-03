@@ -1,5 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Activity,
+  Clock,
+  Layers,
+  ListOrdered,
+  LogOut,
+  Moon,
+  Plus,
+  Search,
+  ShieldCheck,
+  Sun,
+  TrendingUp,
+  Trophy,
+  Wallet,
+} from 'lucide-react';
 import { api, loadAuth, saveAuth } from './api';
 import { OrderBook } from './components/OrderBook';
 import { OrderTicket } from './components/OrderTicket';
@@ -65,10 +80,26 @@ export const App: React.FC = () => {
   const [bottomTab, setBottomTab] = useState<BottomTab>('positions');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [watchlisted, setWatchlisted] = useState<Record<string, boolean>>({
     AAPL: true,
     NVDA: true,
   });
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === '/' &&
+        document.activeElement?.tagName !== 'INPUT' &&
+        document.activeElement?.tagName !== 'TEXTAREA'
+      ) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const [candleInterval, setCandleInterval] = useState<CandleInterval>('1m');
   const [equityHistory, setEquityHistory] = useState<EquityPoint[]>([]);
@@ -361,9 +392,81 @@ export const App: React.FC = () => {
       inst.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // Compute OFX Composite Index from all listed instruments
+  const totalLivePx = instruments.reduce(
+    (acc, inst) => acc + (lastPrices[inst.symbol] || inst.last_price || inst.ref_price),
+    0
+  );
+  const totalRefPx = instruments.reduce((acc, inst) => acc + (inst.ref_price || 10000), 0);
+  const ofxIndexVal = totalRefPx > 0 ? (totalLivePx / totalRefPx) * 24500 : 24500;
+  const ofxIndexChgPct =
+    totalRefPx > 0 ? ((totalLivePx - totalRefPx) / totalRefPx) * 100 : 0;
+
+  const openOrdersCount = (ordersQuery.data || []).filter(
+    (o) => o.status === 'NEW' || o.status === 'ACCEPTED' || o.status === 'PARTIALLY_FILLED'
+  ).length;
+  const positionsCount = portfolio?.positions.length || 0;
+
+  const handleQuickMarginTopUp = async () => {
+    try {
+      await api.seedPortfolio({ cash_cents: 10_000_000 });
+      refreshAccountData();
+    } catch {
+      // ignore
+    }
+  };
+
   return (
     <div className="groww-app">
-      {/* OrderFlow Exchange Top Navigation Bar */}
+      {/* Tier 1: Institutional Exchange Status & Composite Index Bar */}
+      <div className="ofx-status-strip">
+        <div className="ofx-status-inner">
+          <div className="ofx-status-left">
+            <span className="ofx-session-pill">
+              <span className="ofx-pulse-dot" />
+              SESSION: CONTINUOUS CLOB
+            </span>
+
+            <span className="ofx-strip-divider" />
+
+            <div className="ofx-index-item">
+              <span className="ofx-index-name">OFX COMPOSITE</span>
+              <span className="mono bold">{ofxIndexVal.toFixed(2)}</span>
+              <span
+                className={`mono bold ${
+                  ofxIndexChgPct >= 0 ? 'pnl-pos' : 'pnl-neg'
+                }`}
+              >
+                ({ofxIndexChgPct >= 0 ? '+' : ''}
+                {ofxIndexChgPct.toFixed(2)}%)
+              </span>
+            </div>
+
+            <span className="ofx-strip-divider hide-sm" />
+
+            <div className="ofx-index-item hide-sm">
+              <ShieldCheck size={13} className="pnl-pos" />
+              <span className="muted">LULD Band: ±10% · Maker -1 bps / Taker +5 bps</span>
+            </div>
+          </div>
+
+          <div className="ofx-status-right">
+            <div className={`ofx-engine-feed ${connected ? 'live' : 'down'}`}>
+              <Activity size={13} />
+              <span>{connected ? 'MATCHING ENGINE: LIVE' : 'RECONNECTING…'}</span>
+            </div>
+
+            <span className="ofx-strip-divider hide-sm" />
+
+            <div className="ofx-clock mono hide-sm">
+              <Clock size={12} />
+              <span>{new Date(nowMs).toLocaleTimeString()}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tier 2: Main OrderFlow Stock Exchange Navigation Bar */}
       <header className="groww-navbar">
         <div className="groww-navbar-inner">
           <div className="groww-nav-left">
@@ -371,12 +474,17 @@ export const App: React.FC = () => {
               className="groww-brand"
               onClick={() => handleNavClick('explore', 'positions')}
             >
-              <OrderFlowExchangeLogo size={34} />
-              <div className="groww-brand-text">
-                <span className="groww-brand-name">OrderFlow</span>
-                <span className="groww-brand-tag">EXCHANGE · CLOB</span>
+              <OrderFlowExchangeLogo size={36} />
+              <div className="ofx-brand-stack">
+                <div className="ofx-brand-top">
+                  <span className="groww-brand-name">OrderFlow</span>
+                  <span className="groww-brand-tag">OFX</span>
+                </div>
+                <span className="ofx-brand-sub">STOCK EXCHANGE · CLOB</span>
               </div>
             </div>
+
+            <div className="ofx-nav-divider" />
 
             <nav className="groww-nav-links">
               <button
@@ -384,39 +492,50 @@ export const App: React.FC = () => {
                 className={`groww-nav-link ${navSection === 'explore' ? 'active' : ''}`}
                 onClick={() => handleNavClick('explore', 'positions')}
               >
-                Market Watch
+                <TrendingUp size={15} />
+                <span>Market Watch</span>
               </button>
               <button
                 type="button"
                 className={`groww-nav-link ${navSection === 'investments' ? 'active' : ''}`}
                 onClick={() => handleNavClick('investments', 'positions')}
               >
-                Net Positions
+                <Layers size={15} />
+                <span>Positions</span>
+                {positionsCount > 0 && (
+                  <span className="ofx-nav-count">{positionsCount}</span>
+                )}
               </button>
               <button
                 type="button"
                 className={`groww-nav-link ${navSection === 'orders' ? 'active' : ''}`}
                 onClick={() => handleNavClick('orders', 'open_orders')}
               >
-                Order Blotter
+                <ListOrdered size={15} />
+                <span>Order Blotter</span>
+                {openOrdersCount > 0 && (
+                  <span className="ofx-nav-count active-count">{openOrdersCount}</span>
+                )}
               </button>
               <button
                 type="button"
                 className={`groww-nav-link ${navSection === 'leaderboard' ? 'active' : ''}`}
                 onClick={() => handleNavClick('leaderboard', 'leaderboard')}
               >
-                Member Ranks
+                <Trophy size={15} />
+                <span>Leaderboard</span>
               </button>
             </nav>
           </div>
 
-          {/* Exchange Instrument Search Bar */}
+          {/* Exchange Instrument Command-Search Bar */}
           <div className="groww-search-container">
-            <span className="groww-search-icon">🔍</span>
+            <Search size={15} className="groww-search-icon" />
             <input
+              ref={searchInputRef}
               type="text"
               className="groww-search-input"
-              placeholder="Search listed instruments on OFX (AAPL, NVDA, MSFT…)"
+              placeholder="Search symbol or company (AAPL, NVDA, MSFT)…"
               value={searchQuery}
               onFocus={() => setSearchOpen(true)}
               onBlur={() => window.setTimeout(() => setSearchOpen(false), 180)}
@@ -425,77 +544,114 @@ export const App: React.FC = () => {
                 setSearchOpen(true);
               }}
             />
+            <kbd className="ofx-search-kbd">/</kbd>
+
             {searchOpen && (
               <div className="groww-search-dropdown">
-                {filteredInstruments.map((inst) => {
-                  const px = lastPrices[inst.symbol] || inst.last_price || inst.ref_price;
-                  return (
-                    <div
-                      key={inst.symbol}
-                      className="groww-search-item"
-                      onMouseDown={() => {
-                        setSelectedSymbol(inst.symbol);
-                        setSearchQuery('');
-                        setSearchOpen(false);
-                      }}
-                    >
-                      <div className="groww-company-cell">
-                        <span className="groww-mini-logo">{inst.symbol.slice(0, 2)}</span>
-                        <div>
-                          <div className="bold">{inst.name}</div>
-                          <div className="muted" style={{ fontSize: '11px' }}>
-                            OFX · EQ · {inst.symbol}
+                <div className="ofx-search-drop-head">
+                  <span>LISTED INSTRUMENTS (OFX · EQ)</span>
+                  <span>LTP</span>
+                </div>
+                {filteredInstruments.length === 0 ? (
+                  <div className="empty-row">No matching instruments</div>
+                ) : (
+                  filteredInstruments.map((inst) => {
+                    const px = lastPrices[inst.symbol] || inst.last_price || inst.ref_price;
+                    const ref = inst.ref_price || px;
+                    const diffPct = ref > 0 ? ((px - ref) / ref) * 100 : 0;
+                    return (
+                      <div
+                        key={inst.symbol}
+                        className="groww-search-item"
+                        onMouseDown={() => {
+                          setSelectedSymbol(inst.symbol);
+                          setSearchQuery('');
+                          setSearchOpen(false);
+                        }}
+                      >
+                        <div className="groww-company-cell">
+                          <span className="groww-mini-logo">{inst.symbol.slice(0, 2)}</span>
+                          <div>
+                            <div className="bold">{inst.name}</div>
+                            <div className="muted" style={{ fontSize: '11px' }}>
+                              OFX · EQ · {inst.symbol}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="mono bold">${formatPrice(px)}</div>
+                          <div
+                            className={`mono ${
+                              diffPct >= 0 ? 'pnl-pos' : 'pnl-neg'
+                            }`}
+                            style={{ fontSize: '11px' }}
+                          >
+                            {diffPct >= 0 ? '+' : ''}
+                            {diffPct.toFixed(2)}%
                           </div>
                         </div>
                       </div>
-                      <span className="mono bold">${formatPrice(px)}</span>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
             )}
           </div>
 
           <div className="groww-nav-right">
             {portfolio && (
-              <div className="groww-wallet-pill" title="Available Clearing Margin">
-                <span className="muted">Margin</span>
-                <span className="mono bold">{formatUSD(portfolio.cash_available)}</span>
+              <div className="ofx-margin-widget" title="Available Clearing Margin">
+                <div className="ofx-margin-icon">
+                  <Wallet size={15} />
+                </div>
+                <div className="ofx-margin-info">
+                  <span className="ofx-margin-label">Clearing Margin</span>
+                  <span className="ofx-margin-val mono">
+                    {formatUSD(portfolio.cash_available)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="ofx-margin-add-btn"
+                  title="Add +$100,000 Paper Margin"
+                  onClick={handleQuickMarginTopUp}
+                >
+                  <Plus size={13} />
+                </button>
               </div>
             )}
-
-            <div className={`groww-ws-badge ${connected ? 'live' : 'down'}`}>
-              <span className="groww-ws-dot" />
-              <span>{connected ? 'LIVE' : 'SYNC'}</span>
-            </div>
 
             <button
               type="button"
               className="groww-icon-btn"
-              title="Toggle Light / Dark Theme"
+              title={theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
               onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
             >
-              {theme === 'light' ? '🌙' : '☀️'}
+              {theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}
             </button>
 
             <div className="groww-user-chip">
               <span className="groww-avatar">
                 {auth.email.slice(0, 1).toUpperCase()}
               </span>
-              <span className="groww-user-email">{auth.email.split('@')[0]}</span>
+              <div className="ofx-user-meta">
+                <span className="groww-user-email">{auth.email.split('@')[0]}</span>
+                <span className="ofx-user-role">DMA MEMBER</span>
+              </div>
               <button
                 type="button"
-                className="groww-logout-btn"
+                className="ofx-logout-icon-btn"
+                title="Disconnect Member Session"
                 onClick={handleLogout}
               >
-                Logout
+                <LogOut size={14} />
               </button>
             </div>
           </div>
         </div>
       </header>
 
-      {/* Groww Indices & Watchlist Strip */}
+      {/* Tier 3: Listed Equities Market Watch Strip */}
       <div className="groww-ticker-bar">
         <div className="groww-ticker-inner">
           {instruments.map((inst) => {
@@ -512,13 +668,22 @@ export const App: React.FC = () => {
                 onClick={() => setSelectedSymbol(inst.symbol)}
               >
                 <div className="groww-chip-top">
-                  <span className="groww-chip-sym">{inst.symbol}</span>
+                  <div className="ofx-chip-sym-group">
+                    <span className="groww-chip-sym">{inst.symbol}</span>
+                    <span className="ofx-chip-exch">EQ</span>
+                  </div>
                   <span className="groww-chip-px mono">${formatPrice(px)}</span>
                 </div>
-                <div className={`groww-chip-chg mono ${diff >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>
-                  {diff >= 0 ? '+' : ''}
-                  {formatPrice(diff)} ({diff >= 0 ? '+' : ''}
-                  {pct.toFixed(2)}%)
+                <div className="ofx-chip-bottom">
+                  <span className="ofx-chip-name">{inst.name}</span>
+                  <span
+                    className={`ofx-chip-pct-pill mono ${
+                      diff >= 0 ? 'up' : 'down'
+                    }`}
+                  >
+                    {diff >= 0 ? '+' : ''}
+                    {pct.toFixed(2)}%
+                  </span>
                 </div>
               </button>
             );
